@@ -1,12 +1,42 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use lsp_server::{Connection, Message, RequestId, Response};
 use lsp_types::*;
 use regex::Regex;
 use serde_json::{json, Value};
 use walkdir::WalkDir;
+
+// ---------------------------------------------------------------------------
+// Static regexes — compiled once, reused across every request and file parse.
+// ---------------------------------------------------------------------------
+
+fn comment_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/").unwrap())
+}
+
+fn rule_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"([^{}@]+)\{([^{}]*)\}").unwrap())
+}
+
+fn pseudo_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"::?[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*\))?").unwrap())
+}
+
+fn class_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\.[a-zA-Z][a-zA-Z0-9_-]*").unwrap())
+}
+
+fn class_attr_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)class\s*=\s*(["'])"#).unwrap())
+}
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -16,8 +46,11 @@ use walkdir::WalkDir;
 struct ClassInfo {
     /// Raw property declarations inside the `{ }` block (trimmed).
     properties: String,
-    /// Basename of the CSS file where this class was found.
+    /// Basename of the CSS file — used for display only (e.g. "styles.css").
     source_file: String,
+    /// Full canonical path — used to remove stale entries when a file changes.
+    /// Stored as a String to avoid PathBuf hashing complexity.
+    source_path: String,
 }
 
 type ClassMap = HashMap<String, ClassInfo>;
@@ -30,7 +63,6 @@ type DocumentMap = HashMap<Url, String>;
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (connection, io_threads) = Connection::stdio();
 
-    // Advertise capabilities during the LSP handshake.
     let capabilities = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         completion_provider: Some(CompletionOptions {
@@ -49,7 +81,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (init_id, init_params_raw) = connection.initialize_start()?;
     let init_params: InitializeParams = serde_json::from_value(init_params_raw)?;
 
-    // Build the initial CSS class map from the workspace root.
     // Prefer workspace_folders (modern); fall back to root_uri (deprecated but
     // still set by most clients including Zed).
     let root_path: Option<PathBuf> = init_params
@@ -76,7 +107,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     connection.initialize_finish(init_id, serde_json::to_value(init_result)?)?;
 
-    // Main message loop — synchronous, no async runtime.
     let mut documents: DocumentMap = HashMap::new();
 
     loop {
@@ -87,8 +117,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         match msg {
             Message::Request(req) => {
-                // handle_shutdown sends the response and returns true when it
-                // sees a "shutdown" request; we then break and wait for "exit".
                 if connection.handle_shutdown(&req)? {
                     break;
                 }
@@ -174,7 +202,6 @@ fn route_notification(
                 update_css_map(&p, class_map);
             }
         }
-        // "initialized" and "exit" need no action — lsp-server handles exit.
         _ => {}
     }
 }
@@ -267,10 +294,6 @@ fn hover_handler(
 // ---------------------------------------------------------------------------
 
 /// Returns true when `pos` lies within the value of an HTML `class` attribute.
-///
-/// Strategy: build the text that precedes the cursor, then check whether the
-/// last `class=` opening quote has been closed.  This handles multi-line
-/// attributes and multiple class tokens on a line.
 fn in_class_attribute(text: &str, pos: Position) -> bool {
     let lines: Vec<&str> = text.lines().collect();
     let line_idx = pos.line as usize;
@@ -293,13 +316,10 @@ fn in_class_attribute(text: &str, pos: Position) -> bool {
         }
     }
 
-    // Find the last `class="` or `class='` (case-insensitive, whitespace-tolerant).
-    let class_attr_re = Regex::new(r#"(?i)class\s*=\s*(["'])"#).unwrap();
-
-    if let Some(m) = class_attr_re.captures_iter(&before).last() {
+    if let Some(m) = class_attr_re().captures_iter(&before).last() {
         let quote = m[1].chars().next().unwrap_or('"');
         let after_quote = &before[m.get(0).unwrap().end()..];
-        // We are inside the attribute value if the opening quote has not been closed.
+        // Inside the value if the opening quote has not been closed yet.
         !after_quote.contains(quote)
     } else {
         false
@@ -318,21 +338,19 @@ fn word_at(text: &str, pos: Position) -> Option<String> {
     let line = lines[line_idx];
     let col = pos.character as usize;
 
-    // Treat characters as bytes — CSS identifiers are ASCII.
+    // CSS identifiers are ASCII, so byte indexing is safe here.
     let bytes = line.as_bytes();
 
     if col >= bytes.len() || !is_ident_byte(bytes[col]) {
         return None;
     }
 
-    // Extend left.
     let start = (0..col)
         .rev()
         .find(|&i| !is_ident_byte(bytes[i]))
         .map(|i| i + 1)
         .unwrap_or(0);
 
-    // Extend right.
     let end = (col + 1..bytes.len())
         .find(|&i| !is_ident_byte(bytes[i]))
         .unwrap_or(bytes.len());
@@ -350,10 +368,18 @@ fn is_ident_byte(b: u8) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Walks `root` recursively and parses every `.css` file found.
+///
+/// Symlinks are NOT followed — a symlink could point outside the workspace.
+/// Directories named `node_modules` or starting with `.` are skipped entirely
+/// so dependency CSS files don't pollute completions or slow startup.
 fn scan_directory(root: &Path, class_map: &mut ClassMap) {
     for entry in WalkDir::new(root)
-        .follow_links(true)
+        .follow_links(false)
         .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_str().unwrap_or("");
+            name != "node_modules" && !name.starts_with('.')
+        })
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "css"))
     {
@@ -369,12 +395,14 @@ fn parse_css_file(path: &Path, class_map: &mut ClassMap) {
         .unwrap_or("")
         .to_string();
 
+    let source_path = path.to_string_lossy().into_owned();
+
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return, // Silently skip unreadable files.
+        Err(_) => return,
     };
 
-    parse_css_content(&content, &source_file, class_map);
+    parse_css_content(&content, &source_file, &source_path, class_map);
 }
 
 /// Parses CSS text and inserts discovered classes into `class_map`.
@@ -383,23 +411,18 @@ fn parse_css_file(path: &Path, class_map: &mut ClassMap) {
 ///   1. Strip block comments.
 ///   2. Match non-nested rule blocks: `selector { declarations }`.
 ///      At-rules (`@media`, `@keyframes`, …) are excluded at the selector
-///      level but inner rule blocks within them are still matched.
-///   3. Strip pseudo-classes/elements from the selector so they don't
-///      accidentally produce class names like `hover`.
+///      level, but inner rule blocks within them are still matched.
+///   3. Strip pseudo-classes/elements from the selector.
 ///   4. Extract every `.identifier` from the cleaned selector.
-fn parse_css_content(content: &str, source_file: &str, class_map: &mut ClassMap) {
-    // Compiled once per file — acceptable overhead compared to I/O.
-    let comment_re = Regex::new(r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/").unwrap();
-    // Non-nested rule block: selector cannot contain `{`, `}`, or start with `@`.
-    let rule_re = Regex::new(r"([^{}@]+)\{([^{}]*)\}").unwrap();
-    // Pseudo-classes and pseudo-elements, including functional forms like :not(…).
-    let pseudo_re = Regex::new(r"::?[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*\))?").unwrap();
-    // CSS class selector (the dot is consumed, not captured).
-    let class_re = Regex::new(r"\.[a-zA-Z][a-zA-Z0-9_-]*").unwrap();
+fn parse_css_content(
+    content: &str,
+    source_file: &str,
+    source_path: &str,
+    class_map: &mut ClassMap,
+) {
+    let stripped = comment_re().replace_all(content, " ");
 
-    let stripped = comment_re.replace_all(content, " ");
-
-    for cap in rule_re.captures_iter(&stripped) {
+    for cap in rule_re().captures_iter(&stripped) {
         let selector_raw = &cap[1];
         let properties = cap[2].trim().to_string();
 
@@ -407,9 +430,9 @@ fn parse_css_content(content: &str, source_file: &str, class_map: &mut ClassMap)
             continue;
         }
 
-        let selector = pseudo_re.replace_all(selector_raw, "");
+        let selector = pseudo_re().replace_all(selector_raw, "");
 
-        for class_match in class_re.find_iter(&selector) {
+        for class_match in class_re().find_iter(&selector) {
             let name = &class_match.as_str()[1..]; // strip leading `.`
 
             // Always overwrite so the last definition wins (mirrors CSS cascade).
@@ -418,6 +441,7 @@ fn parse_css_content(content: &str, source_file: &str, class_map: &mut ClassMap)
                 ClassInfo {
                     properties: properties.clone(),
                     source_file: source_file.to_string(),
+                    source_path: source_path.to_string(),
                 },
             );
         }
@@ -428,8 +452,11 @@ fn parse_css_content(content: &str, source_file: &str, class_map: &mut ClassMap)
 // File watcher — incremental CSS map updates
 // ---------------------------------------------------------------------------
 
-/// Handles `workspace/didChangeWatchedFiles`.  Only the affected file is
+/// Handles `workspace/didChangeWatchedFiles`. Only the affected file is
 /// re-parsed; the rest of the map is untouched.
+///
+/// Entries are keyed by full path (not just basename) so two files named
+/// `styles.css` in different directories don't interfere with each other.
 fn update_css_map(params: &DidChangeWatchedFilesParams, class_map: &mut ClassMap) {
     for change in &params.changes {
         let path: PathBuf = match change.uri.to_file_path() {
@@ -441,14 +468,11 @@ fn update_css_map(params: &DidChangeWatchedFilesParams, class_map: &mut ClassMap
             continue;
         }
 
-        let source_file = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
+        let source_path = path.to_string_lossy().into_owned();
 
-        // Remove stale entries for this specific file before re-parsing.
-        class_map.retain(|_, info| info.source_file != source_file);
+        // Remove stale entries for this specific file using the full path,
+        // so identically-named files in different directories are unaffected.
+        class_map.retain(|_, info| info.source_path != source_path);
 
         if change.typ == FileChangeType::CREATED || change.typ == FileChangeType::CHANGED {
             parse_css_file(&path, class_map);
