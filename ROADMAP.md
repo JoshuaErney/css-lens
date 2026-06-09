@@ -39,15 +39,15 @@ Checked items have been shipped — see [CHANGELOG.md](CHANGELOG.md) for details
 - [x] Show all definitions when multiple files define the same class or ID *(v0.3.0)*
 - [ ] Expand shorthand properties (`margin: 8px 16px` → all four sides)
 - [ ] Color swatches next to color values
-- [ ] Show computed specificity score — IDs score `(1,0,0)`, classes `(0,1,0)`
+- [x] Show computed specificity score — IDs score `(1,0,0)`, classes `(0,1,0)` *(v0.5.0)*
 
 ---
 
 ## Diagnostics
 
-- [ ] Highlight class names in HTML that don't exist in any CSS file
+- [x] Highlight class names in HTML that don't exist in any CSS file *(v0.5.0)*
 - [ ] Show a soft hint (faint underline, not an error) for classes and IDs that appear unused — leaves the developer to decide if they're JS-driven
-- [ ] Warn when the same class or ID is defined twice in the same CSS file
+- [x] Warn when the same class or ID is defined twice in the same CSS file *(v0.5.0)*
 
 ---
 

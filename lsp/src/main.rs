@@ -140,7 +140,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 connection.sender.send(Message::Response(resp))?;
             }
             Message::Notification(notif) => {
-                route_notification(&notif.method, notif.params, &mut class_map, &mut documents);
+                let outgoing = route_notification(
+                    &notif.method,
+                    notif.params,
+                    &mut class_map,
+                    &mut documents,
+                );
+                for n in outgoing {
+                    connection.sender.send(Message::Notification(n))?;
+                }
             }
             Message::Response(_) => {}
         }
@@ -193,32 +201,85 @@ fn route_notification(
     params: Value,
     class_map: &mut ClassMap,
     documents: &mut DocumentMap,
-) {
+) -> Vec<lsp_server::Notification> {
+    let mut out: Vec<lsp_server::Notification> = Vec::new();
+
     match method {
         "textDocument/didOpen" => {
             if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(params) {
-                documents.insert(p.text_document.uri, p.text_document.text);
+                let uri = p.text_document.uri;
+                let text = p.text_document.text;
+                documents.insert(uri.clone(), text.clone());
+                if is_html_uri(&uri) {
+                    out.push(publish_diagnostics(uri, diagnostics_for_html(&text, class_map)));
+                }
             }
         }
         "textDocument/didChange" => {
             if let Ok(p) = serde_json::from_value::<DidChangeTextDocumentParams>(params) {
                 if let Some(last) = p.content_changes.into_iter().last() {
-                    documents.insert(p.text_document.uri, last.text);
+                    let uri = p.text_document.uri;
+                    let text = last.text;
+                    documents.insert(uri.clone(), text.clone());
+                    if is_html_uri(&uri) {
+                        out.push(publish_diagnostics(uri, diagnostics_for_html(&text, class_map)));
+                    }
                 }
             }
         }
         "textDocument/didClose" => {
             if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params) {
-                documents.remove(&p.text_document.uri);
+                let uri = p.text_document.uri;
+                documents.remove(&uri);
+                out.push(publish_diagnostics(uri, vec![]));
             }
         }
         "workspace/didChangeWatchedFiles" => {
             if let Ok(p) = serde_json::from_value::<DidChangeWatchedFilesParams>(params) {
+                // Collect affected CSS paths before mutating the map.
+                let affected: Vec<(PathBuf, FileChangeType)> = p
+                    .changes
+                    .iter()
+                    .filter_map(|c| {
+                        let path = c.uri.to_file_path().ok()?;
+                        if path.extension().map_or(false, |e| e == "css") {
+                            Some((path, c.typ))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
                 update_css_map(&p, class_map);
+
+                // Emit diagnostics for each changed CSS file.
+                for (path, typ) in &affected {
+                    if let Ok(uri) = Url::from_file_path(path) {
+                        let diags = if *typ == FileChangeType::DELETED {
+                            vec![]
+                        } else {
+                            diagnostics_for_css_duplicates(class_map, &path.to_string_lossy())
+                        };
+                        out.push(publish_diagnostics(uri, diags));
+                    }
+                }
+
+                // Refresh HTML diagnostics for all open HTML documents since the
+                // class map may have changed.
+                let html_diags: Vec<_> = documents
+                    .iter()
+                    .filter(|(uri, _)| is_html_uri(uri))
+                    .map(|(uri, text)| {
+                        publish_diagnostics(uri.clone(), diagnostics_for_html(text, class_map))
+                    })
+                    .collect();
+                out.extend(html_diags);
             }
         }
         _ => {}
     }
+
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -351,8 +412,9 @@ fn hover_handler(
             .as_deref()
             .map(|mq| format!("\n_inside_ `{mq}`"))
             .unwrap_or_default();
+        let (a, b, c) = specificity(&info.selector);
         format!(
-            "**{}** — {}:{}{}\n\n```css\n{} {{\n{}\n}}\n```",
+            "**{}** — {}:{}{}\n\nSpecificity: `({a},{b},{c})`\n\n```css\n{} {{\n{}\n}}\n```",
             lookup_key,
             info.source_file,
             info.definition_line + 1,
@@ -368,8 +430,9 @@ fn hover_handler(
                 .as_deref()
                 .map(|mq| format!(" _(inside `{mq}`)_"))
                 .unwrap_or_default();
+            let (a, b, c) = specificity(&info.selector);
             parts.push(format!(
-                "**{}.** {}:{}{}\n```css\n{} {{\n{}\n}}\n```",
+                "**{}.** {}:{}{} — Specificity: `({a},{b},{c})`\n```css\n{} {{\n{}\n}}\n```",
                 i + 1,
                 info.source_file,
                 info.definition_line + 1,
@@ -973,4 +1036,171 @@ fn update_css_map(params: &DidChangeWatchedFilesParams, class_map: &mut ClassMap
             parse_css_file(&path, class_map);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+fn is_html_uri(uri: &Url) -> bool {
+    let p = uri.path();
+    p.ends_with(".html") || p.ends_with(".htm")
+}
+
+fn publish_diagnostics(uri: Url, diagnostics: Vec<Diagnostic>) -> lsp_server::Notification {
+    lsp_server::Notification {
+        method: "textDocument/publishDiagnostics".to_string(),
+        params: serde_json::to_value(PublishDiagnosticsParams {
+            uri,
+            diagnostics,
+            version: None,
+        })
+        .unwrap_or(json!({})),
+    }
+}
+
+/// A reference to a class name or ID name found in an HTML attribute.
+struct SelectorRef {
+    line: u32,
+    col_start: u32,
+    col_end: u32,
+    name: String,
+    is_id: bool,
+}
+
+/// Scans `text` for class and ID attribute values and returns a reference for
+/// every token found. Handles both `class="a b"` and `id="foo"` forms.
+fn html_selector_refs(text: &str) -> Vec<SelectorRef> {
+    let mut refs = Vec::new();
+    for (line_num, line) in text.lines().enumerate() {
+        collect_attr_refs(line, line_num as u32, class_attr_re(), false, &mut refs);
+        collect_attr_refs(line, line_num as u32, id_attr_re(), true, &mut refs);
+    }
+    refs
+}
+
+fn collect_attr_refs(
+    line: &str,
+    line_num: u32,
+    attr_re: &Regex,
+    is_id: bool,
+    refs: &mut Vec<SelectorRef>,
+) {
+    for cap in attr_re.captures_iter(line) {
+        let quote = cap[1].chars().next().unwrap_or('"');
+        let value_start = cap.get(0).unwrap().end(); // byte offset after the opening quote
+        let rest = &line[value_start..];
+
+        // Find closing quote on the same line (multi-line attributes are rare; skip them).
+        let value_len = rest.find(quote).unwrap_or(rest.len());
+        let value = &rest[..value_len];
+
+        // Extract each whitespace-separated token and its column positions.
+        let mut tok_start = 0usize;
+        for (i, &b) in value.as_bytes().iter().enumerate() {
+            if b == b' ' || b == b'\t' {
+                if tok_start < i {
+                    refs.push(SelectorRef {
+                        line: line_num,
+                        col_start: (value_start + tok_start) as u32,
+                        col_end: (value_start + i) as u32,
+                        name: value[tok_start..i].to_string(),
+                        is_id,
+                    });
+                }
+                tok_start = i + 1;
+            }
+        }
+        if tok_start < value.len() {
+            refs.push(SelectorRef {
+                line: line_num,
+                col_start: (value_start + tok_start) as u32,
+                col_end: (value_start + value.len()) as u32,
+                name: value[tok_start..].to_string(),
+                is_id,
+            });
+        }
+    }
+}
+
+/// Returns error diagnostics for every class or ID referenced in `text` that
+/// does not exist in `class_map`.
+fn diagnostics_for_html(text: &str, class_map: &ClassMap) -> Vec<Diagnostic> {
+    html_selector_refs(text)
+        .into_iter()
+        .filter_map(|r| {
+            let lookup = if r.is_id {
+                format!("#{}", r.name)
+            } else {
+                r.name.clone()
+            };
+            if class_map.contains_key(&lookup) {
+                return None;
+            }
+            let kind = if r.is_id { "id" } else { "class" };
+            Some(Diagnostic {
+                range: Range {
+                    start: Position { line: r.line, character: r.col_start },
+                    end: Position { line: r.line, character: r.col_end },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("css-class-mapper".to_string()),
+                message: format!("Unknown CSS {kind} '{}'", r.name),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// Returns warning diagnostics for every class or ID that is defined more than
+/// once within `source_path`. The first definition is silently accepted; each
+/// subsequent one is flagged.
+fn diagnostics_for_css_duplicates(class_map: &ClassMap, source_path: &str) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+
+    for (name, infos) in class_map {
+        let in_file: Vec<_> = infos
+            .iter()
+            .filter(|i| i.source_path == source_path)
+            .collect();
+
+        if in_file.len() <= 1 {
+            continue;
+        }
+
+        let display = if name.starts_with('#') {
+            name.clone()
+        } else {
+            format!(".{name}")
+        };
+
+        for info in &in_file[1..] {
+            diags.push(Diagnostic {
+                range: Range {
+                    start: Position { line: info.definition_line, character: 0 },
+                    end: Position { line: info.definition_line, character: 0 },
+                },
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("css-class-mapper".to_string()),
+                message: format!("'{display}' is already defined earlier in this file"),
+                ..Default::default()
+            });
+        }
+    }
+
+    diags
+}
+
+// ---------------------------------------------------------------------------
+// Specificity
+// ---------------------------------------------------------------------------
+
+/// Computes the CSS specificity `(a, b, c)` for the first selector in a
+/// comma-separated list. `a` = ID count, `b` = class count, `c` = 0 (type
+/// selectors are not tracked in our simplified selector model).
+fn specificity(selector: &str) -> (u32, u32, u32) {
+    let part = selector.split(',').next().unwrap_or(selector);
+    let a = id_re().find_iter(part).count() as u32;
+    let b = class_re().find_iter(part).count() as u32;
+    (a, b, 0)
 }

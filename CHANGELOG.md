@@ -8,6 +8,20 @@ Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 
 ---
 
+## [0.5.0] — 2026-06-09
+
+### Added
+- **Diagnostics: undefined classes/IDs** — class and ID names in HTML that don't
+  exist in any scanned CSS file are now underlined as errors; the squiggle
+  clears as soon as the definition is added to CSS and the file is saved
+- **Diagnostics: duplicate selectors** — if the same class or ID is defined more
+  than once in the same CSS file, every definition after the first is flagged as
+  a warning
+- **Specificity score in hover** — each hover tooltip now shows the computed
+  CSS specificity as `(a,b,c)` (IDs, classes, type selectors)
+
+---
+
 ## [0.4.0] — 2026-06-09
 
 ### Added
