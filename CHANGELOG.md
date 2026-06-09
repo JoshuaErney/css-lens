@@ -8,6 +8,29 @@ Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 
 ---
 
+## [0.4.0] — 2026-06-09
+
+### Added
+- **`@media` / `@supports` context in hover** — when a rule is nested inside a
+  media query, the hover tooltip shows which query it belongs to
+  (e.g. _inside `@media (max-width: 768px)`_)
+- **ID selector support** — `#id` selectors in CSS are now parsed alongside
+  class selectors; completions, hover, and go-to-definition all work inside
+  `id="..."` attributes
+- **Single-value guard for `id="..."`** — completions stop being offered once
+  the attribute already has a value, since IDs are single-value
+- **GitHub Actions release workflow** — pushing a `v*` tag now automatically
+  builds for all three targets and publishes the release assets
+
+### Changed
+- CSS parser rewritten from a flat regex to a proper brace-depth-aware walker.
+  This correctly handles `@media` blocks, `@supports`, `@layer`, nested rules,
+  and string literals containing `{` or `}` characters.
+- `@layer` and other block @-rules are now traversed so selectors inside them
+  are found; they inherit the enclosing media query context if any.
+
+---
+
 ## [0.3.0] — 2026-06-09
 
 ### Added

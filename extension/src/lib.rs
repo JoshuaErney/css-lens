@@ -35,7 +35,7 @@ impl zed::Extension for CssClassMapper {
             },
         )
         .or_else(|_| {
-            zed::github_release_by_tag_name("joshuaerney/css-class-mapper-lsp", "v0.3.0")
+            zed::github_release_by_tag_name("joshuaerney/css-class-mapper-lsp", "v0.4.0")
         })
         .map_err(|e| {
             format!("Failed to fetch any GitHub release (tried latest and v0.2.0): {e}")

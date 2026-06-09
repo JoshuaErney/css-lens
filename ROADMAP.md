@@ -8,9 +8,9 @@ Checked items have been shipped — see [CHANGELOG.md](CHANGELOG.md) for details
 ## CSS Parsing
 
 - [x] Handle `@import` — follow imported CSS files automatically *(v0.2.0)*
-- [ ] Support `@media` — capture which breakpoint a class lives in
+- [x] Support `@media` — capture which breakpoint a class lives in *(v0.4.0)*
 - [x] Handle multiple definitions of the same class across files *(v0.3.0)*
-- [ ] Extract ID selectors (`#id`) alongside class selectors
+- [x] Extract ID selectors (`#id`) alongside class selectors *(v0.4.0)*
 
 ---
 
@@ -18,7 +18,7 @@ Checked items have been shipped — see [CHANGELOG.md](CHANGELOG.md) for details
 
 - [x] Complete when `class` attribute already has values (`class="btn |"`) *(v0.2.0)*
 - [x] Filter out classes already used in the same `class` attribute *(v0.2.0)*
-- [ ] Trigger completions and hover inside `id="..."` attributes — `id` is single-value only, stop suggesting once a value exists
+- [x] Trigger completions and hover inside `id="..."` attributes — `id` is single-value only, stop suggesting once a value exists *(v0.4.0)*
 - [ ] Scope suggestions to CSS reachable from the current HTML file — `<link>` tags, inline `<style>` blocks, and `@import` chains
 
 ---
@@ -35,7 +35,7 @@ Checked items have been shipped — see [CHANGELOG.md](CHANGELOG.md) for details
 - [x] Show the full original selector (`.btn.btn--primary`) not just the class name *(v0.3.0)*
 - [x] Show which file the rule comes from *(v0.1.0)*
 - [x] Show which line number the rule comes from *(v0.3.0)*
-- [ ] Show the media query context if the rule is inside one (`@media (max-width: 768px)`)
+- [x] Show the media query context if the rule is inside one (`@media (max-width: 768px)`) *(v0.4.0)*
 - [x] Show all definitions when multiple files define the same class or ID *(v0.3.0)*
 - [ ] Expand shorthand properties (`margin: 8px 16px` → all four sides)
 - [ ] Color swatches next to color values
@@ -85,3 +85,7 @@ Checked items have been shipped — see [CHANGELOG.md](CHANGELOG.md) for details
 - [ ] Cap file size — skip CSS files over a configurable limit to handle minified files
 
 ---
+
+## Distribution
+
+- [x] GitHub Actions workflow to auto-compile and publish release assets on new tags *(v0.4.0)*
