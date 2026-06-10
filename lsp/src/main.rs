@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let init_result = InitializeResult {
         capabilities,
         server_info: Some(ServerInfo {
-            name: "css-class-mapper-lsp".to_string(),
+            name: "css-lens-lsp".to_string(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
     };
@@ -133,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // workspace/didChangeWatchedFiles when any .css file is saved.
     let register_params = RegistrationParams {
         registrations: vec![Registration {
-            id: "css-class-mapper-css-watcher".to_string(),
+            id: "css-lens-css-watcher".to_string(),
             method: "workspace/didChangeWatchedFiles".to_string(),
             register_options: Some(
                 serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
@@ -797,7 +797,7 @@ fn code_action_handler(
     let mut actions: Vec<CodeActionOrCommand> = Vec::new();
 
     for diag in &params.context.diagnostics {
-        if diag.source.as_deref() != Some("css-class-mapper") {
+        if diag.source.as_deref() != Some("css-lens") {
             continue;
         }
         if diag.severity != Some(DiagnosticSeverity::ERROR) {
@@ -1610,7 +1610,7 @@ fn diagnostics_for_html(text: &str, class_map: &ClassMap) -> Vec<Diagnostic> {
                     end: Position { line: r.line, character: r.col_end },
                 },
                 severity: Some(DiagnosticSeverity::ERROR),
-                source: Some("css-class-mapper".to_string()),
+                source: Some("css-lens".to_string()),
                 message: format!("Unknown CSS {kind} '{}'", r.name),
                 ..Default::default()
             })
@@ -1633,7 +1633,7 @@ fn diagnostics_for_css_duplicates(class_map: &ClassMap, source_path: &str) -> Ve
                     end: Position { line: info.definition_line, character: 0 },
                 },
                 severity: Some(DiagnosticSeverity::WARNING),
-                source: Some("css-class-mapper".to_string()),
+                source: Some("css-lens".to_string()),
                 message: format!("'{display}' is already defined earlier in this file"),
                 ..Default::default()
             });
@@ -1680,7 +1680,7 @@ fn diagnostics_for_unused(
                     end: Position { line: info.definition_line, character: 0 },
                 },
                 severity: Some(DiagnosticSeverity::HINT),
-                source: Some("css-class-mapper".to_string()),
+                source: Some("css-lens".to_string()),
                 message: format!("'{display}' is not used in any open HTML file"),
                 ..Default::default()
             });

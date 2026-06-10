@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `css-class-mapper-lsp` are documented here.
+All notable changes to `css-lens` are documented here.
 
 Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 - `MINOR` bump — new features

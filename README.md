@@ -1,6 +1,6 @@
-# css-class-mapper-lsp
+# CSS Lens
 
-A native Rust LSP server that powers the [CSS Class Mapper](https://github.com/joshuaerney/css-class-mapper) Zed extension.
+A native Rust LSP server that powers the [CSS Lens](https://github.com/joshuaerney/css-lens) Zed extension.
 
 It scans every `.css` file in your workspace and wires up a full set of HTML authoring features — completions, hover documentation, diagnostics, navigation, and refactoring — all backed by a real understanding of your stylesheet.
 
@@ -70,8 +70,8 @@ On startup it walks every `.css` file in the workspace, parses all selectors and
 Requires Rust installed via [rustup](https://rustup.rs).
 
 ```bash
-git clone https://github.com/joshuaerney/css-class-mapper-lsp
-cd css-class-mapper-lsp/lsp
+git clone https://github.com/joshuaerney/css-lens
+cd css-lens/lsp
 cargo build --release
 # binary is at target/release/css-class-mapper-lsp
 ```

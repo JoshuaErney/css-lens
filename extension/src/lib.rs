@@ -28,17 +28,17 @@ impl zed::Extension for CssClassMapper {
         // GitHub API returns 401 (a known Zed API bug for unauthenticated calls).
         // Note: github_release_by_tag_name does not accept GithubReleaseOptions.
         let release = zed::latest_github_release(
-            "joshuaerney/css-class-mapper-lsp",
+            "joshuaerney/css-lens",
             GithubReleaseOptions {
                 require_assets: true,
                 pre_release: false,
             },
         )
         .or_else(|_| {
-            zed::github_release_by_tag_name("joshuaerney/css-class-mapper-lsp", "v0.7.1")
+            zed::github_release_by_tag_name("joshuaerney/css-lens", "v0.7.1")
         })
         .map_err(|e| {
-            format!("Failed to fetch any GitHub release (tried latest and v0.7.1): {e}")
+            format!("Failed to fetch any GitHub release from css-lens (tried latest and v0.7.1): {e}")
         })?;
 
         let (platform, arch) = zed::current_platform();
