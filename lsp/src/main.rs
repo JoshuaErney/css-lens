@@ -458,9 +458,14 @@ fn hover_handler(
         None => return Response::new_ok(id, json!(null)),
     };
 
+    let (before, line, col) = match cursor_context(text, pos) {
+        Some(ctx) => ctx,
+        None => return Response::new_ok(id, json!(null)),
+    };
+
     // style="..." — hover over a CSS variable name (--foo)
-    if in_style_attribute(text, pos) {
-        let word = match word_at(text, pos) {
+    if in_attr_before(&before, style_attr_re()) {
+        let word = match word_at_ctx(line, col) {
             Some(w) if w.starts_with("--") => w,
             _ => return Response::new_ok(id, json!(null)),
         };
@@ -478,13 +483,13 @@ fn hover_handler(
         return Response::new_ok(id, serde_json::to_value(hover).unwrap_or(json!(null)));
     }
 
-    let lookup_key = if in_class_attribute(text, pos) {
-        match word_at(text, pos) {
+    let lookup_key = if in_attr_before(&before, class_attr_re()) {
+        match word_at_ctx(line, col) {
             Some(w) => w,
             None => return Response::new_ok(id, json!(null)),
         }
-    } else if in_id_attribute(text, pos) {
-        match word_at(text, pos) {
+    } else if in_attr_before(&before, id_attr_re()) {
+        match word_at_ctx(line, col) {
             Some(w) => format!("#{w}"),
             None => return Response::new_ok(id, json!(null)),
         }
@@ -853,17 +858,21 @@ fn in_style_attribute(text: &str, pos: Position) -> bool {
     in_attr(text, pos, style_attr_re())
 }
 
-fn in_attr(text: &str, pos: Position, attr_re: &Regex) -> bool {
-    let (before, _, _) = match cursor_context(text, pos) {
-        Some(ctx) => ctx,
-        None => return false,
-    };
-    if let Some(m) = attr_re.captures_iter(&before).last() {
+fn in_attr_before(before: &str, attr_re: &Regex) -> bool {
+    if let Some(m) = attr_re.captures_iter(before).last() {
         let quote = m[1].chars().next().unwrap_or('"');
         !before[m.get(0).unwrap().end()..].contains(quote)
     } else {
         false
     }
+}
+
+fn in_attr(text: &str, pos: Position, attr_re: &Regex) -> bool {
+    let (before, _, _) = match cursor_context(text, pos) {
+        Some(ctx) => ctx,
+        None => return false,
+    };
+    in_attr_before(&before, attr_re)
 }
 
 /// Converts a UTF-16 code-unit offset (as sent by LSP clients) to a UTF-8 byte
@@ -995,25 +1004,25 @@ fn build_insert_text(name: &str, line: &str, col: usize) -> String {
     }
 }
 
-fn word_at(text: &str, pos: Position) -> Option<String> {
-    let (_, line, col) = cursor_context(text, pos)?;
+fn word_at_ctx(line: &str, col: usize) -> Option<String> {
     let bytes = line.as_bytes();
-
     if col >= bytes.len() || !is_ident_byte(bytes[col]) {
         return None;
     }
-
     let start = (0..col)
         .rev()
         .find(|&i| !is_ident_byte(bytes[i]))
         .map(|i| i + 1)
         .unwrap_or(0);
-
     let end = (col + 1..bytes.len())
         .find(|&i| !is_ident_byte(bytes[i]))
         .unwrap_or(bytes.len());
-
     Some(line[start..end].to_string())
+}
+
+fn word_at(text: &str, pos: Position) -> Option<String> {
+    let (_, line, col) = cursor_context(text, pos)?;
+    word_at_ctx(line, col)
 }
 
 #[inline]
@@ -1470,11 +1479,54 @@ struct SelectorRef {
 
 fn html_selector_refs(text: &str) -> Vec<SelectorRef> {
     let mut refs = Vec::new();
+    let mut open_attr: Option<(char, bool)> = None;
     for (line_num, line) in text.lines().enumerate() {
-        collect_attr_refs(line, line_num as u32, class_attr_re(), false, &mut refs);
-        collect_attr_refs(line, line_num as u32, id_attr_re(), true, &mut refs);
+        if let Some((quote, is_id)) = open_attr.take() {
+            open_attr = collect_continuation(line, line_num as u32, quote, is_id, &mut refs);
+            if open_attr.is_some() {
+                continue;
+            }
+        }
+        let class_open = collect_attr_refs(line, line_num as u32, class_attr_re(), false, &mut refs);
+        let id_open = collect_attr_refs(line, line_num as u32, id_attr_re(), true, &mut refs);
+        open_attr = class_open.or(id_open);
     }
     refs
+}
+
+fn collect_value_tokens(
+    line: &str,
+    line_num: u32,
+    value_start: usize,
+    end: usize,
+    is_id: bool,
+    refs: &mut Vec<SelectorRef>,
+) {
+    let value = &line[value_start..end];
+    let mut tok_start = 0usize;
+    for (i, &b) in value.as_bytes().iter().enumerate() {
+        if b == b' ' || b == b'\t' {
+            if tok_start < i {
+                refs.push(SelectorRef {
+                    line: line_num,
+                    col_start: (value_start + tok_start) as u32,
+                    col_end: (value_start + i) as u32,
+                    name: value[tok_start..i].to_string(),
+                    is_id,
+                });
+            }
+            tok_start = i + 1;
+        }
+    }
+    if tok_start < value.len() {
+        refs.push(SelectorRef {
+            line: line_num,
+            col_start: (value_start + tok_start) as u32,
+            col_end: (value_start + value.len()) as u32,
+            name: value[tok_start..].to_string(),
+            is_id,
+        });
+    }
 }
 
 fn collect_attr_refs(
@@ -1483,37 +1535,39 @@ fn collect_attr_refs(
     attr_re: &Regex,
     is_id: bool,
     refs: &mut Vec<SelectorRef>,
-) {
+) -> Option<(char, bool)> {
+    let mut last_open = None;
     for cap in attr_re.captures_iter(line) {
         let quote = cap[1].chars().next().unwrap_or('"');
         let value_start = cap.get(0).unwrap().end();
         let rest = &line[value_start..];
-        let value_len = rest.find(quote).unwrap_or(rest.len());
-        let value = &rest[..value_len];
+        let (value_end, open) = match rest.find(quote) {
+            Some(len) => (value_start + len, false),
+            None => (value_start + rest.len(), true),
+        };
+        collect_value_tokens(line, line_num, value_start, value_end, is_id, refs);
+        last_open = if open { Some((quote, is_id)) } else { None };
+    }
+    last_open
+}
 
-        let mut tok_start = 0usize;
-        for (i, &b) in value.as_bytes().iter().enumerate() {
-            if b == b' ' || b == b'\t' {
-                if tok_start < i {
-                    refs.push(SelectorRef {
-                        line: line_num,
-                        col_start: (value_start + tok_start) as u32,
-                        col_end: (value_start + i) as u32,
-                        name: value[tok_start..i].to_string(),
-                        is_id,
-                    });
-                }
-                tok_start = i + 1;
-            }
+/// Processes the leading portion of a line that continues an open attribute from
+/// the previous line. Returns `Some((quote, is_id))` if still unclosed at line end.
+fn collect_continuation(
+    line: &str,
+    line_num: u32,
+    quote: char,
+    is_id: bool,
+    refs: &mut Vec<SelectorRef>,
+) -> Option<(char, bool)> {
+    match line.find(quote) {
+        Some(close) => {
+            collect_value_tokens(line, line_num, 0, close, is_id, refs);
+            None
         }
-        if tok_start < value.len() {
-            refs.push(SelectorRef {
-                line: line_num,
-                col_start: (value_start + tok_start) as u32,
-                col_end: (value_start + value.len()) as u32,
-                name: value[tok_start..].to_string(),
-                is_id,
-            });
+        None => {
+            collect_value_tokens(line, line_num, 0, line.len(), is_id, refs);
+            Some((quote, is_id))
         }
     }
 }
@@ -1611,6 +1665,51 @@ fn diagnostics_for_unused(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(refs: &[SelectorRef]) -> Vec<&str> {
+        refs.iter().map(|r| r.name.as_str()).collect()
+    }
+
+    #[test]
+    fn single_line_class_attr() {
+        let html = r#"<div class="foo bar baz"></div>"#;
+        let refs = html_selector_refs(html);
+        assert_eq!(names(&refs), ["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn multi_line_class_attr() {
+        let html = "<div class=\"foo\n  bar baz\">";
+        let refs = html_selector_refs(html);
+        assert_eq!(names(&refs), ["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn multi_line_class_attr_three_lines() {
+        let html = "<div class=\"foo\n  bar\n  baz\">";
+        let refs = html_selector_refs(html);
+        assert_eq!(names(&refs), ["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn multi_line_then_new_attr_on_same_line() {
+        let html = "<div class=\"foo\n  bar\"> <span class=\"qux\">";
+        let refs = html_selector_refs(html);
+        assert_eq!(names(&refs), ["foo", "bar", "qux"]);
+    }
+
+    #[test]
+    fn continuation_line_numbers() {
+        let html = "<div class=\"foo\n  bar\">";
+        let refs = html_selector_refs(html);
+        assert_eq!(refs[0].line, 0); // foo on line 0
+        assert_eq!(refs[1].line, 1); // bar on line 1
+    }
 }
 
 // ---------------------------------------------------------------------------
