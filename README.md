@@ -73,7 +73,7 @@ Requires Rust installed via [rustup](https://rustup.rs).
 git clone https://github.com/joshuaerney/css-lens
 cd css-lens/lsp
 cargo build --release
-# binary is at target/release/css-class-mapper-lsp
+# binary is at target/release/css-lens
 ```
 
 ### Cross-compilation targets
@@ -99,11 +99,11 @@ GitHub release assets must be named exactly as follows for the Zed extension to 
 
 | Platform | Asset filename |
 |---|---|
-| macOS Apple Silicon | `css-class-mapper-lsp-{version}-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `css-class-mapper-lsp-{version}-x86_64-apple-darwin.tar.gz` |
-| Linux x86_64 | `css-class-mapper-lsp-{version}-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `css-lens-{version}-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `css-lens-{version}-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `css-lens-{version}-x86_64-unknown-linux-gnu.tar.gz` |
 
-Each `.tar.gz` must contain a single executable named `css-class-mapper-lsp`.
+Each `.tar.gz` must contain a single executable named `css-lens`.
 
 ---
 

@@ -3,13 +3,13 @@ use zed_extension_api::{
     LanguageServerInstallationStatus, Os, Result,
 };
 
-struct CssClassMapper {
+struct CssLens {
     cached_binary_path: Option<String>,
 }
 
-impl zed::Extension for CssClassMapper {
+impl zed::Extension for CssLens {
     fn new() -> Self {
-        CssClassMapper {
+        CssLens {
             cached_binary_path: None,
         }
     }
@@ -35,10 +35,10 @@ impl zed::Extension for CssClassMapper {
             },
         )
         .or_else(|_| {
-            zed::github_release_by_tag_name("joshuaerney/css-lens", "v0.7.1")
+            zed::github_release_by_tag_name("joshuaerney/css-lens", "v0.7.2")
         })
         .map_err(|e| {
-            format!("Failed to fetch any GitHub release from css-lens (tried latest and v0.7.1): {e}")
+            format!("Failed to fetch any GitHub release from css-lens (tried latest and v0.7.2): {e}")
         })?;
 
         let (platform, arch) = zed::current_platform();
@@ -55,7 +55,7 @@ impl zed::Extension for CssClassMapper {
         };
 
         let version = &release.version;
-        let asset_name = format!("css-class-mapper-lsp-{version}-{target}.tar.gz");
+        let asset_name = format!("css-lens-{version}-{target}.tar.gz");
 
         let asset = release
             .assets
@@ -69,8 +69,8 @@ impl zed::Extension for CssClassMapper {
                 )
             })?;
 
-        let binary_dir = format!("css-class-mapper-lsp-{version}");
-        let binary_path = format!("{binary_dir}/css-class-mapper-lsp");
+        let binary_dir = format!("css-lens-{version}");
+        let binary_path = format!("{binary_dir}/css-lens");
 
         // If the binary already exists on disk for this version, skip the download.
         // We intentionally do NOT require cached_binary_path to be set — that field
@@ -135,4 +135,4 @@ impl zed::Extension for CssClassMapper {
     }
 }
 
-zed::register_extension!(CssClassMapper);
+zed::register_extension!(CssLens);

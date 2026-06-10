@@ -8,6 +8,15 @@ Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 
 ---
 
+## [0.7.2] — 2026-06-09
+
+### Changed
+- **Binary renamed to `css-lens`** — the LSP binary, release asset filenames, and
+  all internal identifiers are now `css-lens` to match the extension rebrand;
+  release assets are now named `css-lens-{version}-{target}.tar.gz`
+
+---
+
 ## [0.7.1] — 2026-06-09
 
 ### Fixed

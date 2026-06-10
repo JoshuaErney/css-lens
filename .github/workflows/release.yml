@@ -34,14 +34,14 @@ jobs:
       - name: Package
         run: |
           VERSION=${GITHUB_REF_NAME}
-          cp lsp/target/${{ matrix.target }}/release/css-class-mapper-lsp css-class-mapper-lsp
-          tar -czf css-class-mapper-lsp-${VERSION}-${{ matrix.target }}.tar.gz css-class-mapper-lsp
+          cp lsp/target/${{ matrix.target }}/release/css-lens css-lens
+          tar -czf css-lens-${VERSION}-${{ matrix.target }}.tar.gz css-lens
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: css-class-mapper-lsp-*.tar.gz
+          path: css-lens-*.tar.gz
 
   release:
     needs: build

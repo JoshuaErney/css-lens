@@ -1,10 +1,10 @@
 [package]
-name = "css-class-mapper-lsp"
-version = "0.7.1"
+name = "css-lens"
+version = "0.7.2"
 edition = "2021"
 
 [[bin]]
-name = "css-class-mapper-lsp"
+name = "css-lens"
 path = "src/main.rs"
 
 [dependencies]

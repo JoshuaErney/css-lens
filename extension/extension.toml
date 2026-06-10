@@ -1,11 +1,11 @@
 id = "css-class-mapper"
 name = "CSS Lens"
 description = "Full CSS intelligence for HTML — autocomplete, diagnostics, hover, go-to-definition, find references, and rename for class and ID attributes"
-version = "0.7.1"
+version = "0.7.2"
 schema_version = 1
 authors = ["Joshua Erney <joshuaerney@icloud.com>"]
 repository = "https://github.com/joshuaerney/css-lens"
 
-[language_servers.css-class-mapper-lsp]
+[language_servers.css-lens]
 name = "CSS Lens LSP"
 languages = ["HTML"]
