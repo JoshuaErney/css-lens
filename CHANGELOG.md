@@ -8,6 +8,47 @@ Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 
 ---
 
+## [0.7.0] — 2026-06-09
+
+### Fixed
+- **Rename word-boundary bug** — renaming `.btn` no longer corrupts sibling
+  classes like `.btn-primary` that appear on the same CSS selector line; the
+  rename edit now checks that the match is a complete token before applying
+- **UTF-16 column crash** — `pos.character` (a UTF-16 code-unit offset as
+  required by the LSP spec) was previously used directly as a UTF-8 byte
+  offset, causing a panic on any document line containing non-ASCII characters
+  (accented letters, em-dashes, etc.); a proper `utf16_offset_to_byte`
+  conversion is now applied throughout all position-dependent helpers
+- **Duplicate-parse via `@import`** — `scan_directory` now shares a single
+  `visited` set across all files; previously a file that appeared both directly
+  in the workspace and in an `@import` chain was parsed twice, generating
+  false-positive "already defined" duplicate-selector warnings
+- **Digit-start identifiers** — `is_valid_css_ident` now rejects names that
+  start with a digit (e.g. `2col`), which the CSS Syntax Level 3 spec
+  disallows as class/ID selectors; renaming to such a name previously wrote
+  invalid CSS silently
+- **`extract_quoted` multi-token messages** — the code-action name extractor
+  used `find` + `rfind`, which would return a garbage span if a diagnostic
+  message ever contained two quoted tokens; it now uses `find` twice to always
+  extract the first quoted span
+- **Extension fallback tag** — the hard-coded fallback release tag in the Zed
+  extension was still pointing to `v0.6.0` after the previous release; updated
+  to `v0.7.0`
+
+### Improved
+- **Completion performance** — `build_insert_text` no longer calls
+  `cursor_context` once per completion candidate; the cursor line and column
+  are computed once before the candidate map, reducing work from
+  O(candidates × document\_lines) to O(document\_lines) per request
+- **Shared cursor context** — all position-dependent helpers (`in_attr`,
+  `style_prefix`, `completion_context`, `id_completion_context`, `word_at`,
+  `build_insert_text`) now share a single `cursor_context` helper that builds
+  the before-cursor string in one pass, eliminating redundant line iteration
+- **Color deduplication** — `color_summary` now uses a `HashSet` for O(1)
+  membership checks instead of `Vec::contains` (O(n) per check)
+
+---
+
 ## [0.6.0] — 2026-06-09
 
 ### Added
