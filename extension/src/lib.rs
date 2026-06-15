@@ -35,10 +35,10 @@ impl zed::Extension for CssLens {
             },
         )
         .or_else(|_| {
-            zed::github_release_by_tag_name("joshuaerney/css-lens", "v0.7.2")
+            zed::github_release_by_tag_name("joshuaerney/css-lens", "v0.8.0")
         })
         .map_err(|e| {
-            format!("Failed to fetch any GitHub release from css-lens (tried latest and v0.7.2): {e}")
+            format!("Failed to fetch any GitHub release from css-lens (tried latest and v0.8.0): {e}")
         })?;
 
         let (platform, arch) = zed::current_platform();

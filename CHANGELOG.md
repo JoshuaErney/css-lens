@@ -8,6 +8,37 @@ Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 
 ---
 
+## [0.8.0] — 2026-06-14
+
+### Added
+- **Remove unused rule** — an unused CSS selector hint now offers a Quick Fix
+  to delete the entire rule block; a multi-selector guard (`a, b { }`) ensures
+  the action is only offered when every co-selector in the block is also unused,
+  so no live rules are accidentally removed
+- **Scope to linked CSS** — completions, hover, and go-to-definition are now
+  filtered to CSS files reachable from the current HTML document via
+  `<link rel="stylesheet">` tags and their `@import` chains; when no resolvable
+  links are found the full workspace map is used as a fallback; diagnostics
+  remain lenient (a class defined anywhere in the workspace never triggers an
+  error); the "Create class/ID" code action also prefers a linked CSS file as
+  its insertion target
+- **Inline `<style>` block support** — classes and IDs defined inside `<style>`
+  blocks are included in completions, hover, go-to-definition, and diagnostics
+  for that HTML document; selector `definition_line` values are offset to the
+  correct line in the HTML file so navigation lands in the right place; CSS
+  variables declared in inline styles surface in `style=""` completions
+
+### Fixed
+- **Unclosed attribute bleeds into adjacent markup** — a `class="` or `id="`
+  without a closing quote previously swallowed the remainder of the line and
+  leaked into following lines, causing false "Unknown CSS class" errors for
+  tokens that were never part of the attribute value; `<` is now treated as a
+  hard boundary in both the same-line and continuation-line scanners so
+  malformed attributes terminate cleanly; genuine multi-line class attributes
+  (no `<` between the opening quote and its closing quote) are unaffected
+
+---
+
 ## [0.7.2] — 2026-06-09
 
 ### Changed

@@ -21,3 +21,5 @@ target
 #.idea/
 *.tar.gz
 .DS_Store
+ROADMAP.md
+TEST_CHECKLIST.md
