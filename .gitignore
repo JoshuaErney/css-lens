@@ -21,3 +21,4 @@ target
 #.idea/
 *.tar.gz
 .DS_Store
+PLANNING.md
