@@ -78,6 +78,11 @@ fn style_block_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?is)<style\b[^>]*>(.*?)</style>").unwrap())
 }
 
+fn keyframes_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)@keyframes\s+([a-zA-Z_-][a-zA-Z0-9_-]*)").unwrap())
+}
+
 // ---------------------------------------------------------------------------
 // Data model
 // ---------------------------------------------------------------------------
@@ -96,6 +101,14 @@ struct ClassInfo {
 type VarMap = HashMap<String, String>;
 type ClassMap = HashMap<String, Vec<ClassInfo>>;
 type DocumentMap = HashMap<Url, String>;
+
+#[derive(Debug, Clone)]
+struct KeyframeInfo {
+    source_file: String,
+    source_path: String,
+    definition_line: u32,
+}
+type KeyframesMap = HashMap<String, KeyframeInfo>;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -120,6 +133,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         references_provider: Some(OneOf::Left(true)),
         rename_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        code_lens_provider: Some(CodeLensOptions { resolve_provider: Some(false) }),
         ..Default::default()
     };
 
@@ -141,6 +156,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         scan_directory(root, &mut class_map);
     }
     let mut var_map: VarMap = refresh_var_map(&class_map);
+    let mut keyframes_map: KeyframesMap = if let Some(ref root) = root_path {
+        scan_keyframes(root)
+    } else {
+        KeyframesMap::new()
+    };
 
     let init_result = InitializeResult {
         capabilities,
@@ -175,6 +195,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }))?;
 
     let mut documents: DocumentMap = HashMap::new();
+    // Pre-built usage counts: rebuilt whenever HTML docs change so code lens
+    // requests never block on a full workspace walk.
+    let mut usage_counts: HashMap<String, usize> = HashMap::new();
 
     loop {
         let msg = match connection.receiver.recv() {
@@ -193,6 +216,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     &req.params,
                     &class_map,
                     &var_map,
+                    &keyframes_map,
+                    &usage_counts,
                     &documents,
                     root_path.as_deref(),
                 );
@@ -204,7 +229,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     notif.params,
                     &mut class_map,
                     &mut var_map,
+                    &mut keyframes_map,
+                    &mut usage_counts,
                     &mut documents,
+                    root_path.as_deref(),
                 );
                 for n in outgoing {
                     connection.sender.send(Message::Notification(n))?;
@@ -222,31 +250,54 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 // Request routing
 // ---------------------------------------------------------------------------
 
+/// Extracts the `textDocument.uri` field from any `textDocument/*` request params.
+fn params_uri(params: &Value) -> Option<Url> {
+    let uri_val = params
+        .pointer("/textDocument/uri")
+        .or_else(|| params.pointer("/textDocumentPositionParams/textDocument/uri"))?;
+    Url::parse(uri_val.as_str()?).ok()
+}
+
 fn route_request(
     id: RequestId,
     method: &str,
     params: &Value,
     class_map: &ClassMap,
     var_map: &VarMap,
+    keyframes_map: &KeyframesMap,
+    usage_counts: &HashMap<String, usize>,
     documents: &DocumentMap,
     root_path: Option<&Path>,
 ) -> Response {
+    // For HTML-file requests, build the per-document scoped map once here so
+    // completion, hover, and definition handlers all share the same computation.
+    let scoped: Option<ClassMap> = params_uri(params)
+        .filter(|uri| is_html_uri(uri))
+        .and_then(|uri| {
+            let path = uri.to_file_path().ok()?;
+            let text = documents.get(&uri)?;
+            build_document_class_map(class_map, &path, text)
+        });
+    let scoped_vars: Option<VarMap> = scoped.as_ref().map(|m| refresh_var_map(m));
+    let effective_map: &ClassMap = scoped.as_ref().unwrap_or(class_map);
+    let effective_vars: &VarMap = scoped_vars.as_ref().unwrap_or(var_map);
+
     match method {
         "textDocument/completion" => {
             match serde_json::from_value::<CompletionParams>(params.clone()) {
-                Ok(p) => completion_handler(id, p, class_map, var_map, documents),
+                Ok(p) => completion_handler(id, p, effective_map, effective_vars, keyframes_map, documents),
                 Err(e) => Response::new_err(id, -32602, e.to_string()),
             }
         }
         "textDocument/hover" => {
             match serde_json::from_value::<HoverParams>(params.clone()) {
-                Ok(p) => hover_handler(id, p, class_map, var_map, documents),
+                Ok(p) => hover_handler(id, p, effective_map, effective_vars, var_map, keyframes_map, documents),
                 Err(e) => Response::new_err(id, -32602, e.to_string()),
             }
         }
         "textDocument/definition" => {
             match serde_json::from_value::<GotoDefinitionParams>(params.clone()) {
-                Ok(p) => definition_handler(id, p, class_map, documents),
+                Ok(p) => definition_handler(id, p, effective_map, keyframes_map, documents),
                 Err(e) => Response::new_err(id, -32602, e.to_string()),
             }
         }
@@ -268,6 +319,18 @@ fn route_request(
                 Err(e) => Response::new_err(id, -32602, e.to_string()),
             }
         }
+        "textDocument/documentSymbol" => {
+            match serde_json::from_value::<DocumentSymbolParams>(params.clone()) {
+                Ok(p) => document_symbol_handler(id, p, class_map),
+                Err(e) => Response::new_err(id, -32602, e.to_string()),
+            }
+        }
+        "textDocument/codeLens" => {
+            match serde_json::from_value::<CodeLensParams>(params.clone()) {
+                Ok(p) => code_lens_handler(id, p, class_map, usage_counts),
+                Err(e) => Response::new_err(id, -32602, e.to_string()),
+            }
+        }
         _ => Response::new_err(id, -32601, format!("method not found: {method}")),
     }
 }
@@ -281,7 +344,10 @@ fn route_notification(
     params: Value,
     class_map: &mut ClassMap,
     var_map: &mut VarMap,
+    keyframes_map: &mut KeyframesMap,
+    usage_counts: &mut HashMap<String, usize>,
     documents: &mut DocumentMap,
+    root_path: Option<&Path>,
 ) -> Vec<lsp_server::Notification> {
     let mut out: Vec<lsp_server::Notification> = Vec::new();
 
@@ -292,7 +358,10 @@ fn route_notification(
                 let text = p.text_document.text;
                 documents.insert(uri.clone(), text.clone());
                 if is_html_uri(&uri) {
-                    out.push(publish_diagnostics(uri.clone(), diagnostics_for_html(&text, &uri, class_map)));
+                    out.push(publish_diagnostics(uri.clone(), all_html_diagnostics(&text, &uri, class_map)));
+                    if let Some(root) = root_path {
+                        *usage_counts = build_usage_counts(root, documents);
+                    }
                 }
             }
         }
@@ -303,7 +372,10 @@ fn route_notification(
                     let text = last.text;
                     documents.insert(uri.clone(), text.clone());
                     if is_html_uri(&uri) {
-                        out.push(publish_diagnostics(uri.clone(), diagnostics_for_html(&text, &uri, class_map)));
+                        out.push(publish_diagnostics(uri.clone(), all_html_diagnostics(&text, &uri, class_map)));
+                        if let Some(root) = root_path {
+                            *usage_counts = build_usage_counts(root, documents);
+                        }
                     }
                 }
             }
@@ -311,8 +383,14 @@ fn route_notification(
         "textDocument/didClose" => {
             if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params) {
                 let uri = p.text_document.uri;
+                let was_html = is_html_uri(&uri);
                 documents.remove(&uri);
                 out.push(publish_diagnostics(uri, vec![]));
+                if was_html {
+                    if let Some(root) = root_path {
+                        *usage_counts = build_usage_counts(root, documents);
+                    }
+                }
             }
         }
         "workspace/didChangeWatchedFiles" => {
@@ -332,6 +410,10 @@ fn route_notification(
 
                 update_css_map(&p, class_map);
                 *var_map = refresh_var_map(class_map);
+                update_keyframes_map(&p, keyframes_map);
+                if let Some(root) = root_path {
+                    *usage_counts = build_usage_counts(root, documents);
+                }
 
                 for (path, typ) in &affected {
                     if let Ok(uri) = Url::from_file_path(path) {
@@ -354,7 +436,7 @@ fn route_notification(
                     .iter()
                     .filter(|(uri, _)| is_html_uri(uri))
                     .map(|(uri, text)| {
-                        publish_diagnostics(uri.clone(), diagnostics_for_html(text, uri, class_map))
+                        publish_diagnostics(uri.clone(), all_html_diagnostics(text, uri, class_map))
                     })
                     .collect();
                 out.extend(html_diags);
@@ -373,8 +455,9 @@ fn route_notification(
 fn completion_handler(
     id: RequestId,
     params: CompletionParams,
-    class_map: &ClassMap,
-    var_map: &VarMap,
+    effective_map: &ClassMap,
+    effective_var_map: &VarMap,
+    keyframes_map: &KeyframesMap,
     documents: &DocumentMap,
 ) -> Response {
     let uri = &params.text_document_position.text_document.uri;
@@ -384,19 +467,6 @@ fn completion_handler(
         Some(t) => t,
         None => return Response::new_ok(id, json!(null)),
     };
-
-    // Scope to CSS reachable from this document's <link> tags; fall back to
-    // the full global map when no resolvable links are found.
-    let scoped: Option<ClassMap> = if is_html_uri(uri) {
-        uri.to_file_path().ok().and_then(|html_path| {
-            build_document_class_map(class_map, &html_path, text)
-        })
-    } else {
-        None
-    };
-    let effective_map: &ClassMap = scoped.as_ref().unwrap_or(class_map);
-    let effective_var_map_owned: Option<VarMap> = scoped.as_ref().map(|m| refresh_var_map(m));
-    let effective_var_map: &VarMap = effective_var_map_owned.as_ref().unwrap_or(var_map);
 
     // class="..." — offer class names
     if in_class_attribute(text, pos) {
@@ -473,28 +543,94 @@ fn completion_handler(
         );
     }
 
-    // style="..." — offer CSS custom properties when prefix starts with `--`
+    // style="..." — property names, keyword values, CSS variables, and animation names
     if in_style_attribute(text, pos) {
-        let prefix = style_prefix(text, pos);
-        if prefix.starts_with("--") {
-            let prefix_lower = prefix.to_lowercase();
-            let mut items: Vec<CompletionItem> = effective_var_map
-                .iter()
-                .filter(|(name, _)| name.to_lowercase().starts_with(&prefix_lower))
-                .map(|(name, value)| CompletionItem {
-                    label: name.clone(),
-                    kind: Some(CompletionItemKind::VARIABLE),
-                    detail: Some(value.clone()),
-                    insert_text: Some(name.clone()),
-                    filter_text: Some(name.to_lowercase()),
-                    ..Default::default()
-                })
-                .collect();
-            items.sort_by(|a, b| a.label.cmp(&b.label));
-            return Response::new_ok(
-                id,
-                serde_json::to_value(CompletionResponse::Array(items)).unwrap_or(json!(null)),
-            );
+        match style_context(text, pos) {
+            StyleContext::PropertyName { prefix } => {
+                let prefix_lower = prefix.to_lowercase();
+                let mut items: Vec<CompletionItem> = css_property_completions()
+                    .iter()
+                    .filter(|name| prefix.is_empty() || name.to_lowercase().starts_with(&prefix_lower))
+                    .map(|name| CompletionItem {
+                        label: (*name).to_string(),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        insert_text: Some(format!("{name}: ")),
+                        filter_text: Some(name.to_lowercase()),
+                        ..Default::default()
+                    })
+                    .collect();
+                items.sort_by(|a, b| a.label.cmp(&b.label));
+                return Response::new_ok(
+                    id,
+                    serde_json::to_value(CompletionResponse::Array(items)).unwrap_or(json!(null)),
+                );
+            }
+            StyleContext::PropertyValue { property, prefix } => {
+                // CSS variable completions inside any value (e.g. `color: var(--`)
+                if prefix.starts_with("--") {
+                    let prefix_lower = prefix.to_lowercase();
+                    let mut items: Vec<CompletionItem> = effective_var_map
+                        .iter()
+                        .filter(|(name, _)| name.to_lowercase().starts_with(&prefix_lower))
+                        .map(|(name, value)| CompletionItem {
+                            label: name.clone(),
+                            kind: Some(CompletionItemKind::VARIABLE),
+                            detail: Some(value.clone()),
+                            insert_text: Some(name.clone()),
+                            filter_text: Some(name.to_lowercase()),
+                            ..Default::default()
+                        })
+                        .collect();
+                    items.sort_by(|a, b| a.label.cmp(&b.label));
+                    return Response::new_ok(
+                        id,
+                        serde_json::to_value(CompletionResponse::Array(items)).unwrap_or(json!(null)),
+                    );
+                }
+                // animation-name → offer @keyframes names
+                if property == "animation-name" {
+                    let prefix_lower = prefix.to_lowercase();
+                    let mut items: Vec<CompletionItem> = keyframes_map
+                        .iter()
+                        .filter(|(name, _)| prefix.is_empty() || name.to_lowercase().starts_with(&prefix_lower))
+                        .map(|(name, info)| CompletionItem {
+                            label: name.clone(),
+                            kind: Some(CompletionItemKind::VALUE),
+                            detail: Some(info.source_file.clone()),
+                            insert_text: Some(name.clone()),
+                            filter_text: Some(name.to_lowercase()),
+                            ..Default::default()
+                        })
+                        .collect();
+                    items.sort_by(|a, b| a.label.cmp(&b.label));
+                    return Response::new_ok(
+                        id,
+                        serde_json::to_value(CompletionResponse::Array(items)).unwrap_or(json!(null)),
+                    );
+                }
+                // Keyword value completions for known properties
+                let prefix_lower = prefix.to_lowercase();
+                let values = css_value_completions(&property);
+                if !values.is_empty() {
+                    let mut items: Vec<CompletionItem> = values
+                        .iter()
+                        .filter(|v| prefix.is_empty() || v.to_lowercase().starts_with(&prefix_lower))
+                        .map(|v| CompletionItem {
+                            label: (*v).to_string(),
+                            kind: Some(CompletionItemKind::VALUE),
+                            insert_text: Some((*v).to_string()),
+                            filter_text: Some(v.to_lowercase()),
+                            ..Default::default()
+                        })
+                        .collect();
+                    items.sort_by(|a, b| a.label.cmp(&b.label));
+                    return Response::new_ok(
+                        id,
+                        serde_json::to_value(CompletionResponse::Array(items)).unwrap_or(json!(null)),
+                    );
+                }
+            }
+            StyleContext::None => {}
         }
     }
 
@@ -504,8 +640,10 @@ fn completion_handler(
 fn hover_handler(
     id: RequestId,
     params: HoverParams,
-    class_map: &ClassMap,
+    effective_map: &ClassMap,
+    effective_var_map: &VarMap,
     var_map: &VarMap,
+    keyframes_map: &KeyframesMap,
     documents: &DocumentMap,
 ) -> Response {
     let uri = &params.text_document_position_params.text_document.uri;
@@ -516,38 +654,54 @@ fn hover_handler(
         None => return Response::new_ok(id, json!(null)),
     };
 
-    let scoped: Option<ClassMap> = if is_html_uri(uri) {
-        uri.to_file_path().ok().and_then(|html_path| {
-            build_document_class_map(class_map, &html_path, text)
-        })
-    } else {
-        None
-    };
-    let effective_map: &ClassMap = scoped.as_ref().unwrap_or(class_map);
-
     let (before, line, col) = match cursor_context(text, pos) {
         Some(ctx) => ctx,
         None => return Response::new_ok(id, json!(null)),
     };
 
-    // style="..." — hover over a CSS variable name (--foo)
+    // style="..." — hover over CSS variables or animation-name keyframe names
     if in_attr_before(&before, style_attr_re()) {
-        let word = match word_at_ctx(line, col) {
-            Some(w) if w.starts_with("--") => w,
-            _ => return Response::new_ok(id, json!(null)),
-        };
-        let value = match var_map.get(&word) {
-            Some(v) => v,
-            None => return Response::new_ok(id, json!(null)),
-        };
-        let hover = Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!("**{}**\n\n```css\n{}: {};\n```", word, word, value),
-            }),
-            range: None,
-        };
-        return Response::new_ok(id, serde_json::to_value(hover).unwrap_or(json!(null)));
+        let word = word_at_ctx(line, col);
+        // CSS variable hover (--foo) takes priority
+        if let Some(ref w) = word {
+            if w.starts_with("--") {
+                // Fall back to the global var_map when the scoped map doesn't contain
+                // the variable (e.g. --brand defined in an unlinked CSS file).
+                let value = match effective_var_map.get(w.as_str()).or_else(|| var_map.get(w.as_str())) {
+                    Some(v) => v,
+                    None => return Response::new_ok(id, json!(null)),
+                };
+                let hover = Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: format!("**{}**\n\n```css\n{}: {};\n```", w, w, value),
+                    }),
+                    range: None,
+                };
+                return Response::new_ok(id, serde_json::to_value(hover).unwrap_or(json!(null)));
+            }
+        }
+        // animation-name value hover
+        if let StyleContext::PropertyValue { ref property, .. } = style_context(text, pos) {
+            if property == "animation-name" {
+                if let Some(ref name) = word {
+                    if let Some(info) = keyframes_map.get(name.as_str()) {
+                        let hover = Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!(
+                                    "**@keyframes {}** — {}:{}",
+                                    name, info.source_file, info.definition_line + 1
+                                ),
+                            }),
+                            range: None,
+                        };
+                        return Response::new_ok(id, serde_json::to_value(hover).unwrap_or(json!(null)));
+                    }
+                }
+            }
+        }
+        return Response::new_ok(id, json!(null));
     }
 
     let lookup_key = if in_attr_before(&before, class_attr_re()) {
@@ -628,7 +782,8 @@ fn hover_handler(
 fn definition_handler(
     id: RequestId,
     params: GotoDefinitionParams,
-    class_map: &ClassMap,
+    effective_map: &ClassMap,
+    keyframes_map: &KeyframesMap,
     documents: &DocumentMap,
 ) -> Response {
     let uri = &params.text_document_position_params.text_document.uri;
@@ -639,14 +794,40 @@ fn definition_handler(
         None => return Response::new_ok(id, json!(null)),
     };
 
-    let scoped: Option<ClassMap> = if is_html_uri(uri) {
-        uri.to_file_path().ok().and_then(|html_path| {
-            build_document_class_map(class_map, &html_path, text)
-        })
-    } else {
-        None
-    };
-    let effective_map: &ClassMap = scoped.as_ref().unwrap_or(class_map);
+    // style="animation-name: <cursor>" — jump to @keyframes definition
+    if in_style_attribute(text, pos) {
+        if let StyleContext::PropertyValue { ref property, .. } = style_context(text, pos) {
+            if property == "animation-name" {
+                let (_, line, col) = match cursor_context(text, pos) {
+                    Some(ctx) => ctx,
+                    None => return Response::new_ok(id, json!(null)),
+                };
+                let name = match word_at_ctx(line, col) {
+                    Some(w) => w,
+                    None => return Response::new_ok(id, json!(null)),
+                };
+                if let Some(info) = keyframes_map.get(&name) {
+                    let kf_uri = match Url::from_file_path(&info.source_path) {
+                        Ok(u) => u,
+                        Err(_) => return Response::new_ok(id, json!(null)),
+                    };
+                    let loc = Location {
+                        uri: kf_uri,
+                        range: Range {
+                            start: Position { line: info.definition_line, character: 0 },
+                            end: Position { line: info.definition_line, character: 0 },
+                        },
+                    };
+                    return Response::new_ok(
+                        id,
+                        serde_json::to_value(GotoDefinitionResponse::Scalar(loc)).unwrap_or(json!(null)),
+                    );
+                }
+                return Response::new_ok(id, json!(null));
+            }
+        }
+        return Response::new_ok(id, json!(null));
+    }
 
     let lookup_key = if in_class_attribute(text, pos) {
         match word_at(text, pos) {
@@ -920,31 +1101,18 @@ fn code_action_handler(
     //
     // The diagnostics passed here are only those overlapping the cursor range,
     // so `hinted_lines` is naturally scoped to the lines the user is acting on.
-    let hinted_lines: HashSet<u32> = params
-        .context
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.source.as_deref() == Some("css-lens")
-                && d.severity == Some(DiagnosticSeverity::HINT)
-        })
-        .map(|d| d.range.start.line)
-        .collect();
-
-    let hint_keys: HashSet<String> = params
-        .context
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.source.as_deref() == Some("css-lens")
-                && d.severity == Some(DiagnosticSeverity::HINT)
-        })
-        .filter_map(|d| extract_quoted(&d.message))
-        .map(|display| {
+    let mut hinted_lines: HashSet<u32> = HashSet::new();
+    let mut hint_keys: HashSet<String> = HashSet::new();
+    for d in params.context.diagnostics.iter().filter(|d| {
+        d.source.as_deref() == Some("css-lens") && d.severity == Some(DiagnosticSeverity::HINT)
+    }) {
+        hinted_lines.insert(d.range.start.line);
+        if let Some(display) = extract_quoted(&d.message) {
             // class_map stores classes without '.' and IDs with '#'.
-            if display.starts_with('.') { display[1..].to_string() } else { display }
-        })
-        .collect();
+            let key = if display.starts_with('.') { display[1..].to_string() } else { display };
+            hint_keys.insert(key);
+        }
+    }
 
     if !hint_keys.is_empty() {
         // Group hinted keys by (source_path, definition_line), restricted to
@@ -981,9 +1149,15 @@ fn code_action_handler(
                 Ok(u) => u,
                 Err(_) => continue,
             };
-            let content = match fs::read_to_string(css_path) {
-                Ok(c) => c,
-                Err(_) => continue,
+            // Prefer the editor's live buffer so def_line stays in sync with
+            // the WorkspaceEdit target even when the CSS file has unsaved edits.
+            let content = if let Some(t) = documents.get(&css_uri) {
+                t.clone()
+            } else {
+                match fs::read_to_string(css_path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                }
             };
             let (start_line, end_line) = match find_rule_extent(&content, *def_line) {
                 Some(e) => e,
@@ -1035,6 +1209,113 @@ fn code_action_handler(
     }
 
     Response::new_ok(id, serde_json::to_value(actions).unwrap_or(json!([])))
+}
+
+fn document_symbol_handler(
+    id: RequestId,
+    params: DocumentSymbolParams,
+    class_map: &ClassMap,
+) -> Response {
+    let uri = &params.text_document.uri;
+    let path = match uri.to_file_path() {
+        Ok(p) => p,
+        Err(_) => return Response::new_ok(id, json!([])),
+    };
+    // Only CSS files get outline symbols from class_map.
+    if path.extension().map_or(true, |e| e != "css") {
+        return Response::new_ok(id, json!([]));
+    }
+    let source_path = path.to_string_lossy().into_owned();
+
+    let mut symbols: Vec<SymbolInformation> = Vec::new();
+    for (name, infos) in class_map {
+        for info in infos {
+            if info.source_path != source_path {
+                continue;
+            }
+            let display = if name.starts_with('#') { name.clone() } else { format!(".{name}") };
+            #[allow(deprecated)]
+            symbols.push(SymbolInformation {
+                name: display,
+                kind: SymbolKind::CLASS,
+                location: Location {
+                    uri: uri.clone(),
+                    range: Range {
+                        start: Position { line: info.definition_line, character: 0 },
+                        end: Position { line: info.definition_line, character: 0 },
+                    },
+                },
+                tags: None,
+                deprecated: None,
+                container_name: info.media_query.clone(),
+            });
+        }
+    }
+
+    symbols.sort_by_key(|s| s.location.range.start.line);
+    Response::new_ok(
+        id,
+        serde_json::to_value(DocumentSymbolResponse::Flat(symbols)).unwrap_or(json!([])),
+    )
+}
+
+fn build_usage_counts(root: &Path, documents: &DocumentMap) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    walk_html_files(root, documents, |_uri, text| {
+        for r in html_selector_refs(text) {
+            let key = if r.is_id { format!("#{}", r.name) } else { r.name };
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    });
+    counts
+}
+
+fn code_lens_handler(
+    id: RequestId,
+    params: CodeLensParams,
+    class_map: &ClassMap,
+    usage_counts: &HashMap<String, usize>,
+) -> Response {
+    let uri = &params.text_document.uri;
+    let path = match uri.to_file_path() {
+        Ok(p) => p,
+        Err(_) => return Response::new_ok(id, json!([])),
+    };
+    if path.extension().map_or(true, |e| e != "css") {
+        return Response::new_ok(id, json!([]));
+    }
+    let source_path = path.to_string_lossy().into_owned();
+    let counts = usage_counts;
+
+    let mut lenses: Vec<CodeLens> = Vec::new();
+    for (name, infos) in class_map {
+        for info in infos {
+            if info.source_path != source_path {
+                continue;
+            }
+            let count = counts.get(name).copied().unwrap_or(0);
+            let title = match count {
+                0 => "unused".to_string(),
+                1 => "used 1 time".to_string(),
+                n => format!("used {n} times"),
+            };
+            lenses.push(CodeLens {
+                range: Range {
+                    start: Position { line: info.definition_line, character: 0 },
+                    end: Position { line: info.definition_line, character: 0 },
+                },
+                command: Some(Command {
+                    title,
+                    command: String::new(),
+                    arguments: None,
+                }),
+                data: None,
+            });
+        }
+    }
+
+    lenses.sort_by_key(|l| l.range.start.line);
+    Response::new_ok(id, serde_json::to_value(lenses).unwrap_or(json!([])))
 }
 
 // ---------------------------------------------------------------------------
@@ -1103,19 +1384,63 @@ fn cursor_context<'a>(text: &'a str, pos: Position) -> Option<(String, &'a str, 
     None
 }
 
-/// Returns the CSS identifier fragment immediately before the cursor within a
-/// `style="..."` attribute value. Used to detect `--variable` prefixes.
-fn style_prefix(text: &str, pos: Position) -> String {
+/// Returns the byte index of the last `;` that is not inside a single- or
+/// double-quoted string. Used by `style_context` to split CSS declarations.
+fn last_unquoted_semicolon(s: &str) -> Option<usize> {
+    let mut in_quote: Option<char> = None;
+    let mut last_semi: Option<usize> = None;
+    for (i, c) in s.char_indices() {
+        match in_quote {
+            Some(q) if c == q => in_quote = None,
+            Some(_) => {}
+            None => match c {
+                '\'' | '"' => in_quote = Some(c),
+                ';' => last_semi = Some(i),
+                _ => {}
+            }
+        }
+    }
+    last_semi
+}
+
+enum StyleContext {
+    PropertyName { prefix: String },
+    PropertyValue { property: String, prefix: String },
+    None,
+}
+
+/// Returns the cursor's semantic position within a `style="..."` attribute value.
+fn style_context(text: &str, pos: Position) -> StyleContext {
     let (before, _, _) = match cursor_context(text, pos) {
         Some(ctx) => ctx,
-        None => return String::new(),
+        None => return StyleContext::None,
     };
     let last_match = match style_attr_re().captures_iter(&before).last() {
         Some(m) => m,
-        None => return String::new(),
+        None => return StyleContext::None,
     };
-    extract_prefix(&before[last_match.get(0).unwrap().end()..])
+    let value_fragment = &before[last_match.get(0).unwrap().end()..];
+
+    // Active declaration = text after the last unquoted `;`.
+    // Using a bare rsplit would split on semicolons inside quoted strings
+    // (e.g. content: "a;b"), so we locate the last unquoted semicolon instead.
+    let active = match last_unquoted_semicolon(value_fragment) {
+        Some(pos) => &value_fragment[pos + 1..],
+        None => value_fragment,
+    };
+
+    match active.find(':') {
+        None => {
+            StyleContext::PropertyName { prefix: extract_prefix(active) }
+        }
+        Some(colon) => {
+            let property = active[..colon].trim().to_lowercase();
+            let value_part = &active[colon + 1..];
+            StyleContext::PropertyValue { property, prefix: extract_prefix(value_part) }
+        }
+    }
 }
+
 
 fn completion_context(text: &str, pos: Position) -> (HashSet<String>, String) {
     let (before, line, col) = match cursor_context(text, pos) {
@@ -1295,7 +1620,7 @@ fn parse_css_file_inner(path: &Path, class_map: &mut ClassMap, visited: &mut Has
         Err(_) => return,
     };
 
-    parse_css_content(&content, &source_file, &source_path, class_map);
+    parse_css_content(&content, 0, &source_file, &source_path, class_map);
 
     let parent = path.parent().unwrap_or(Path::new("."));
     for import_path in extract_imports(&content) {
@@ -1303,12 +1628,7 @@ fn parse_css_file_inner(path: &Path, class_map: &mut ClassMap, visited: &mut Has
     }
 }
 
-fn parse_css_content(content: &str, source_file: &str, source_path: &str, class_map: &mut ClassMap) {
-    let stripped = strip_comments(content);
-    parse_rules_at_level(&stripped, 0, None, source_file, source_path, class_map);
-}
-
-fn parse_css_content_at(content: &str, base_line: u32, source_file: &str, source_path: &str, class_map: &mut ClassMap) {
+fn parse_css_content(content: &str, base_line: u32, source_file: &str, source_path: &str, class_map: &mut ClassMap) {
     let stripped = strip_comments(content);
     parse_rules_at_level(&stripped, base_line, None, source_file, source_path, class_map);
 }
@@ -1501,6 +1821,81 @@ fn byte_offset_to_line(content: &str, offset: usize) -> u32 {
         .count() as u32
 }
 
+fn scan_keyframes(root: &Path) -> KeyframesMap {
+    let mut map = KeyframesMap::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_str().unwrap_or("");
+            name != "node_modules" && !name.starts_with('.')
+        })
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "css"))
+    {
+        scan_keyframes_file_inner(entry.path(), &mut map, &mut visited);
+    }
+    map
+}
+
+/// Scans `path` for `@keyframes` declarations and follows `@import` chains,
+/// mirroring the `visited`-set dedup that `parse_css_file_inner` uses.
+fn scan_keyframes_file_inner(path: &Path, keyframes_map: &mut KeyframesMap, visited: &mut HashSet<PathBuf>) {
+    if fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_CSS_BYTES {
+        return;
+    }
+    let canonical = match path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if !visited.insert(canonical) {
+        return;
+    }
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let source_file = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let source_path = path.to_string_lossy().into_owned();
+    for cap in keyframes_re().captures_iter(&content) {
+        let name = cap[1].to_string();
+        let definition_line = byte_offset_to_line(&content, cap.get(0).unwrap().start());
+        keyframes_map.insert(name, KeyframeInfo {
+            source_file: source_file.clone(),
+            source_path: source_path.clone(),
+            definition_line,
+        });
+    }
+    let parent = path.parent().unwrap_or(Path::new("."));
+    for import_path in extract_imports(&content) {
+        scan_keyframes_file_inner(&parent.join(&import_path), keyframes_map, visited);
+    }
+}
+
+/// Re-scans a single CSS file (and its imports) for keyframes after a save.
+fn scan_keyframes_in_file(path: &Path, keyframes_map: &mut KeyframesMap) {
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    scan_keyframes_file_inner(path, keyframes_map, &mut visited);
+}
+
+fn update_keyframes_map(params: &DidChangeWatchedFilesParams, keyframes_map: &mut KeyframesMap) {
+    for change in &params.changes {
+        let path: PathBuf = match change.uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if path.extension().map_or(true, |e| e != "css") {
+            continue;
+        }
+        let source_path = path.to_string_lossy().into_owned();
+        keyframes_map.retain(|_, info| info.source_path != source_path);
+        if change.typ == FileChangeType::CREATED || change.typ == FileChangeType::CHANGED {
+            scan_keyframes_in_file(&path, keyframes_map);
+        }
+    }
+}
+
 fn update_css_map(params: &DidChangeWatchedFilesParams, class_map: &mut ClassMap) {
     for change in &params.changes {
         let path: PathBuf = match change.uri.to_file_path() {
@@ -1579,6 +1974,11 @@ fn reachable_css_paths(html_path: &Path, html_text: &str) -> HashSet<PathBuf> {
 }
 
 fn collect_reachable(path: &Path, reachable: &mut HashSet<PathBuf>, visited: &mut HashSet<PathBuf>) {
+    // Mirror parse_css_file_inner: skip minified/large files so the reachable
+    // set never includes a file whose classes were excluded from class_map.
+    if fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_CSS_BYTES {
+        return;
+    }
     let canonical = match path.canonicalize() {
         Ok(p) => p,
         Err(_) => return,
@@ -1641,22 +2041,6 @@ fn extract_style_blocks(html_text: &str) -> Vec<(u32, String)> {
         .collect()
 }
 
-/// Builds a ClassMap from all inline `<style>` blocks in an HTML document.
-/// `source_file`/`source_path` point to the HTML file itself so hover and
-/// go-to-definition navigate back to the correct location.
-fn inline_class_map_for(html_path: &Path, html_text: &str) -> ClassMap {
-    let mut map = ClassMap::new();
-    let source_file = html_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string();
-    let source_path = html_path.to_string_lossy().into_owned();
-    for (base_line, content) in extract_style_blocks(html_text) {
-        parse_css_content_at(&content, base_line, &source_file, &source_path, &mut map);
-    }
-    map
-}
 
 /// Builds the effective ClassMap for a single HTML document by combining:
 ///   - CSS reachable via `<link rel="stylesheet">` tags (or the full global map
@@ -1689,11 +2073,91 @@ fn build_document_class_map(class_map: &ClassMap, html_path: &Path, html_text: &
             .to_string();
         let source_path = html_path.to_string_lossy().into_owned();
         for (base_line, content) in style_blocks {
-            parse_css_content_at(&content, base_line, &source_file, &source_path, &mut doc_map);
+            parse_css_content(&content, base_line, &source_file, &source_path, &mut doc_map);
         }
     }
 
     Some(doc_map)
+}
+
+// ---------------------------------------------------------------------------
+// style="" property and value completion dictionaries
+// ---------------------------------------------------------------------------
+
+fn css_property_completions() -> &'static [&'static str] {
+    &[
+        "align-content", "align-items", "align-self", "animation", "animation-delay",
+        "animation-direction", "animation-duration", "animation-fill-mode",
+        "animation-iteration-count", "animation-name", "animation-play-state",
+        "animation-timing-function", "aspect-ratio", "background", "background-attachment",
+        "background-clip", "background-color", "background-image", "background-position",
+        "background-repeat", "background-size", "border", "border-bottom", "border-color",
+        "border-left", "border-radius", "border-right", "border-style", "border-top",
+        "border-width", "bottom", "box-shadow", "box-sizing", "clear", "clip-path", "color",
+        "column-gap", "content", "cursor", "display", "filter", "flex", "flex-direction",
+        "flex-grow", "flex-shrink", "flex-wrap", "float", "font", "font-family", "font-size",
+        "font-style", "font-variant", "font-weight", "gap", "grid", "grid-column", "grid-row",
+        "grid-template", "grid-template-areas", "grid-template-columns", "grid-template-rows",
+        "height", "isolation", "justify-content", "justify-items", "justify-self", "left",
+        "letter-spacing", "line-height", "list-style", "margin", "margin-bottom", "margin-left",
+        "margin-right", "margin-top", "max-height", "max-width", "min-height", "min-width",
+        "mix-blend-mode", "object-fit", "opacity", "order", "outline", "overflow", "overflow-x",
+        "overflow-y", "padding", "padding-bottom", "padding-left", "padding-right", "padding-top",
+        "pointer-events", "position", "resize", "right", "row-gap", "text-align",
+        "text-decoration", "text-overflow", "text-shadow", "text-transform", "top", "transform",
+        "transition", "user-select", "vertical-align", "visibility", "white-space", "width",
+        "word-break", "z-index",
+    ]
+}
+
+fn css_value_completions(property: &str) -> &'static [&'static str] {
+    match property {
+        "display" => &["block", "inline", "inline-block", "flex", "inline-flex", "grid",
+            "inline-grid", "none", "contents", "flow-root", "table", "table-cell"],
+        "position" => &["static", "relative", "absolute", "fixed", "sticky"],
+        "visibility" => &["visible", "hidden", "collapse"],
+        "overflow" | "overflow-x" | "overflow-y" => &["visible", "hidden", "scroll", "auto", "clip"],
+        "box-sizing" => &["content-box", "border-box"],
+        "float" => &["left", "right", "none", "inline-start", "inline-end"],
+        "clear" => &["left", "right", "both", "none"],
+        "flex-direction" => &["row", "row-reverse", "column", "column-reverse"],
+        "flex-wrap" => &["nowrap", "wrap", "wrap-reverse"],
+        "justify-content" => &["flex-start", "flex-end", "center", "space-between",
+            "space-around", "space-evenly", "start", "end", "normal"],
+        "align-items" => &["stretch", "flex-start", "flex-end", "center", "baseline",
+            "start", "end", "normal"],
+        "align-self" => &["auto", "stretch", "flex-start", "flex-end", "center", "baseline",
+            "start", "end", "normal"],
+        "align-content" => &["normal", "flex-start", "flex-end", "center", "space-between",
+            "space-around", "space-evenly", "stretch"],
+        "text-align" => &["left", "right", "center", "justify", "start", "end"],
+        "text-decoration" => &["none", "underline", "overline", "line-through"],
+        "text-transform" => &["none", "uppercase", "lowercase", "capitalize"],
+        "white-space" => &["normal", "nowrap", "pre", "pre-wrap", "pre-line", "break-spaces"],
+        "vertical-align" => &["baseline", "top", "middle", "bottom", "text-top", "text-bottom",
+            "sub", "super"],
+        "font-weight" => &["normal", "bold", "lighter", "bolder",
+            "100", "200", "300", "400", "500", "600", "700", "800", "900"],
+        "font-style" => &["normal", "italic", "oblique"],
+        "cursor" => &["auto", "default", "pointer", "move", "text", "wait", "help",
+            "not-allowed", "grab", "grabbing", "crosshair", "zoom-in", "zoom-out"],
+        "pointer-events" => &["auto", "none"],
+        "user-select" => &["auto", "none", "text", "all"],
+        "resize" => &["none", "both", "horizontal", "vertical"],
+        "object-fit" => &["fill", "contain", "cover", "none", "scale-down"],
+        "border-style" => &["none", "solid", "dashed", "dotted", "double", "groove",
+            "ridge", "inset", "outset"],
+        "mix-blend-mode" => &["normal", "multiply", "screen", "overlay", "darken", "lighten",
+            "difference", "exclusion", "hue", "saturation", "color", "luminosity"],
+        "isolation" => &["auto", "isolate"],
+        "animation-fill-mode" => &["none", "forwards", "backwards", "both"],
+        "animation-direction" => &["normal", "reverse", "alternate", "alternate-reverse"],
+        "animation-timing-function" => &["ease", "linear", "ease-in", "ease-out", "ease-in-out",
+            "step-start", "step-end"],
+        "animation-play-state" => &["running", "paused"],
+        "animation-iteration-count" => &["infinite"],
+        _ => &[],
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1727,17 +2191,12 @@ fn refresh_var_map(class_map: &ClassMap) -> VarMap {
 // Workspace HTML scanning (references + rename)
 // ---------------------------------------------------------------------------
 
-/// Returns all locations in workspace HTML files where `lookup_key` is used as
-/// a class name (bare) or an ID value (`#`-prefixed key → bare in attribute).
-fn workspace_html_refs(
-    lookup_key: &str,
-    root: &Path,
-    documents: &DocumentMap,
-) -> Vec<Location> {
-    let is_id = lookup_key.starts_with('#');
-    let bare = if is_id { &lookup_key[1..] } else { lookup_key };
-    let mut locs = Vec::new();
-
+/// Visits every HTML file in the workspace, passing `(uri, text)` to `visitor`.
+/// Prefers the editor's in-memory buffer; falls back to disk for closed files.
+fn walk_html_files<F>(root: &Path, documents: &DocumentMap, mut visitor: F)
+where
+    F: FnMut(&Url, &str),
+{
     for entry in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -1758,17 +2217,30 @@ fn workspace_html_refs(
             Ok(u) => u,
             Err(_) => continue,
         };
-
-        let owned;
+        let owned_text;
         let text: &str = if let Some(t) = documents.get(&uri) {
-            t
+            t.as_str()
         } else {
             match fs::read_to_string(path) {
-                Ok(t) => { owned = t; &owned }
+                Ok(t) => { owned_text = t; owned_text.as_str() }
                 Err(_) => continue,
             }
         };
+        visitor(&uri, text);
+    }
+}
 
+/// Returns all locations in workspace HTML files where `lookup_key` is used as
+/// a class name (bare) or an ID value (`#`-prefixed key → bare in attribute).
+fn workspace_html_refs(
+    lookup_key: &str,
+    root: &Path,
+    documents: &DocumentMap,
+) -> Vec<Location> {
+    let is_id = lookup_key.starts_with('#');
+    let bare = if is_id { &lookup_key[1..] } else { lookup_key };
+    let mut locs = Vec::new();
+    walk_html_files(root, documents, |uri, text| {
         for r in html_selector_refs(text) {
             if r.is_id == is_id && r.name == bare {
                 locs.push(Location {
@@ -1780,8 +2252,7 @@ fn workspace_html_refs(
                 });
             }
         }
-    }
-
+    });
     locs
 }
 
@@ -2062,11 +2533,29 @@ fn collect_continuation(
     }
 }
 
+fn all_html_diagnostics(text: &str, html_uri: &Url, class_map: &ClassMap) -> Vec<Diagnostic> {
+    let mut diags = diagnostics_for_html(text, html_uri, class_map);
+    diags.extend(diagnostics_for_duplicate_classes(text));
+    diags
+}
+
 fn diagnostics_for_html(text: &str, html_uri: &Url, class_map: &ClassMap) -> Vec<Diagnostic> {
-    let inline = html_uri
-        .to_file_path()
-        .map(|p| inline_class_map_for(&p, text))
-        .unwrap_or_default();
+    // Parse inline <style> blocks for any URI scheme (file://, untitled:, etc.).
+    let mut inline = ClassMap::new();
+    let (source_file, source_path) = match html_uri.to_file_path() {
+        Ok(p) => (
+            p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
+            p.to_string_lossy().into_owned(),
+        ),
+        Err(_) => {
+            let path_str = html_uri.path();
+            let file = path_str.rsplit('/').next().unwrap_or("").to_string();
+            (file, html_uri.to_string())
+        }
+    };
+    for (base_line, content) in extract_style_blocks(text) {
+        parse_css_content(&content, base_line, &source_file, &source_path, &mut inline);
+    }
 
     html_selector_refs(text)
         .into_iter()
@@ -2088,6 +2577,98 @@ fn diagnostics_for_html(text: &str, html_uri: &Url, class_map: &ClassMap) -> Vec
             })
         })
         .collect()
+}
+
+fn diagnostics_for_duplicate_classes(text: &str) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    // (quote char, seen names in current attr)
+    let mut continuation: Option<(char, HashSet<String>)> = None;
+
+    for (line_num, line) in text.lines().enumerate() {
+        let line_num = line_num as u32;
+        let mut scan_from = 0usize;
+
+        // Handle continuation of an open multi-line attribute.
+        if let Some((quote, ref mut seen)) = continuation {
+            let tag_boundary = line.find('<').unwrap_or(line.len());
+            let search = &line[..tag_boundary];
+            match search.find(quote) {
+                Some(close) => {
+                    check_dup_tokens(line, line_num, 0, close, seen, &mut diags);
+                    scan_from = close + quote.len_utf8();
+                    continuation = None;
+                }
+                None if tag_boundary < line.len() => {
+                    check_dup_tokens(line, line_num, 0, tag_boundary, seen, &mut diags);
+                    // The '<' terminates the attr; scan the rest of this line for new attrs.
+                    scan_from = tag_boundary;
+                    continuation = None;
+                }
+                None => {
+                    check_dup_tokens(line, line_num, 0, line.len(), seen, &mut diags);
+                    continue; // still open
+                }
+            }
+        }
+
+        // Scan for new class attributes starting at scan_from.
+        let shifted = &line[scan_from..];
+        for cap in class_attr_re().captures_iter(shifted) {
+            let mut seen: HashSet<String> = HashSet::new();
+            let quote = cap[1].chars().next().unwrap_or('"');
+            let value_start = scan_from + cap.get(0).unwrap().end();
+            let rest = &line[value_start..];
+            let tag_start = rest.find('<');
+            let (value_end, open) = match rest.find(quote) {
+                Some(len) if tag_start.map_or(true, |t| len < t) => (value_start + len, false),
+                _ => match tag_start {
+                    Some(t) => (value_start + t, false),
+                    None => (value_start + rest.len(), true),
+                },
+            };
+            check_dup_tokens(line, line_num, value_start, value_end, &mut seen, &mut diags);
+            if open {
+                continuation = Some((quote, seen));
+            }
+        }
+    }
+
+    diags
+}
+
+fn check_dup_tokens(
+    line: &str,
+    line_num: u32,
+    from: usize,
+    to: usize,
+    seen: &mut HashSet<String>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if from >= to { return; }
+    let value = &line[from..to];
+    let mut tok_start = 0usize;
+    let bytes = value.as_bytes();
+    for i in 0..=bytes.len() {
+        let is_sep = i == bytes.len() || bytes[i] == b' ' || bytes[i] == b'\t';
+        if is_sep {
+            if tok_start < i {
+                let tok = &value[tok_start..i];
+                if !tok.is_empty() && !seen.insert(tok.to_string()) {
+                    diags.push(Diagnostic {
+                        range: Range {
+                            start: Position { line: line_num, character: (from + tok_start) as u32 },
+                            end: Position { line: line_num, character: (from + i) as u32 },
+                        },
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        source: Some("css-lens".to_string()),
+                        message: format!("class '{tok}' is already listed in this attribute"),
+                        ..Default::default()
+                    });
+                }
+            }
+            tok_start = i + 1;
+        }
+    }
 }
 
 fn diagnostics_for_css_duplicates(class_map: &ClassMap, source_path: &str) -> Vec<Diagnostic> {

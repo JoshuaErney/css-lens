@@ -8,6 +8,74 @@ Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 
 ---
 
+## [0.9.0] — 2026-06-15
+
+### Added
+- **Duplicate class detection** — a `class="btn btn"` attribute with the same
+  token listed more than once now produces a WARNING diagnostic at the duplicate
+  occurrence; multi-line and whitespace-padded cases are handled correctly
+- **CSS document symbols** — Zed's outline panel now lists all selectors defined
+  in a CSS file (`.btn`, `#hero`, etc.), sorted by line; selectors inside
+  `@media` blocks show the query in the container-name column; the panel
+  supports keyboard navigation and jump-to-selector
+- **`@keyframes` name tracking** — animation names defined with `@keyframes`
+  are indexed at startup and kept up to date on CSS saves; hover over a keyframe
+  name in `style="animation-name: …"` shows file and line; go-to-definition
+  jumps to the `@keyframes` rule; completions are offered when the cursor is in
+  an `animation-name:` value
+- **`style=""` property and value completions** — typing in a `style=""` attribute
+  now offers property-name completions (75+ properties, kind: Property) and
+  keyword-value completions for ~30 properties with discrete valid values (kind:
+  Value); CSS custom properties (`--foo`) are still offered when the prefix
+  starts with `--`; animation-name values are sourced from the `@keyframes` map
+- **Code lens** — each CSS selector displays an inline "used N times" / "unused"
+  count; usage is counted across all workspace HTML files; lenses update when any
+  HTML file opens, changes, or closes
+
+### Fixed
+- `style=""` context detection now correctly skips semicolons inside quoted
+  property values (`content: "a;b"`) when identifying the active declaration,
+  preventing completion and hover from misidentifying the property context
+- `scan_keyframes` now follows `@import` chains with a visited-set guard,
+  matching `scan_directory`'s behaviour; keyframes defined in import-only files
+  are no longer invisible to completions and go-to-definition
+- `diagnostics_for_duplicate_classes` no longer skips the remainder of a line
+  when a malformed multi-line attribute is terminated by a `<` tag boundary;
+  `class=""` attributes appearing after the boundary on the same line are now
+  correctly duplicate-checked
+- Inline `<style>` block diagnostics now work for non-`file://` document URIs
+  (untitled and virtual-filesystem documents); previously such documents always
+  returned an empty inline map, producing false "Unknown CSS class" errors for
+  classes defined in the document's own `<style>` blocks
+- CSS variable hover now falls back to the global `var_map` when the
+  per-document scoped map does not contain the variable; hovering over a custom
+  property defined in an unlinked CSS file no longer silently returns nothing
+- "Remove unused rule" code action now reads CSS content from the editor's
+  in-memory buffer (when the file is open) rather than always reading from disk;
+  previously, unsaved edits to the CSS file caused the deletion range to target
+  the wrong lines
+
+### Changed
+- Scoped class-map computation (per-document `<link>` resolution + inline
+  `<style>` parsing) is now performed once per LSP request in `route_request`
+  and passed to handlers, rather than being independently computed inside each
+  of `completion_handler`, `hover_handler`, and `definition_handler`
+- Usage counts for code lens are pre-built whenever HTML files change and cached
+  in server state; `code_lens_handler` no longer walks the workspace on every
+  scroll event
+- Workspace HTML walk logic is now shared between `workspace_html_refs` and
+  `build_usage_counts` via a common `walk_html_files` helper; previously the
+  WalkDir setup was duplicated verbatim in both functions
+- `parse_css_content_at` merged into `parse_css_content` (new `base_line: u32`
+  parameter); callers passing `0` are unchanged
+- `collect_reachable` now applies the same `MAX_CSS_BYTES` size guard as
+  `parse_css_file_inner`, preventing oversized/minified files from appearing in
+  the scoped reachable set when they were excluded from the global class map
+- Hint collection in the "Remove unused rule" code action is now a single pass
+  over the diagnostics slice (previously two separate filtered iterators)
+
+---
+
 ## [0.8.0] — 2026-06-14
 
 ### Added
