@@ -1,0 +1,376 @@
+{
+  "HTML5 Template": {
+    "prefix": "html5",
+    "body": [
+      "<!doctype html>",
+      "<html lang=\"en\">",
+      "    <head>",
+      "        <meta charset=\"UTF-8\" />",
+      "        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />",
+      "        <meta",
+      "            name=\"description\"",
+      "            content=\"Page description — keep under 160 characters.\"",
+      "        />",
+      "        <meta",
+      "            name=\"theme-color\"",
+      "            content=\"#ffffff\"",
+      "            media=\"(prefers-color-scheme: light)\"",
+      "        />",
+      "        <meta",
+      "            name=\"theme-color\"",
+      "            content=\"#0f0f0f\"",
+      "            media=\"(prefers-color-scheme: dark)\"",
+      "        />",
+      "",
+      "        <meta property=\"og:title\" content=\"Page Title\" />",
+      "        <meta property=\"og:description\" content=\"Page description.\" />",
+      "        <meta property=\"og:type\" content=\"website\" />",
+      "        <meta property=\"og:url\" content=\"https://example.com/\" />",
+      "        <meta property=\"og:image\" content=\"https://example.com/og-image.png\" />",
+      "",
+      "        <title>Page Title</title>",
+      "        <link rel=\"canonical\" href=\"https://example.com/\" />",
+      "        <link rel=\"manifest\" href=\"/site.webmanifest\" />",
+      "        <link rel=\"icon\" href=\"/favicon.ico\" sizes=\"any\" />",
+      "        <link rel=\"icon\" href=\"/icon.svg\" type=\"image/svg+xml\" />",
+      "        <link rel=\"apple-touch-icon\" href=\"/apple-touch-icon.png\" />",
+      "",
+      "        <link rel=\"stylesheet\" href=\"/styles/main.css\" />",
+      "",
+      "        <style>",
+      "            .skip-link {",
+      "                position: absolute;",
+      "                top: 1rem;",
+      "                left: 1rem;",
+      "                padding: 0.5rem 1rem;",
+      "                z-index: 9999;",
+      "                transform: translateY(-200%);",
+      "            }",
+      "            .skip-link:focus {",
+      "                transform: translateY(0);",
+      "            }",
+      "",
+      "            .sr-only {",
+      "                position: absolute;",
+      "                width: 1px;",
+      "                height: 1px;",
+      "                padding: 0;",
+      "                margin: -1px;",
+      "                overflow: hidden;",
+      "                clip: rect(0, 0, 0, 0);",
+      "                white-space: nowrap;",
+      "                border: 0;",
+      "            }",
+      "        </style>",
+      "    </head>",
+      "",
+      "    <body>",
+      "        <a class=\"skip-link\" href=\"#main-content\">Skip to main content</a>",
+      "        <header role=\"banner\">",
+      "            <a href=\"/\" aria-label=\"Site Name — return to homepage\"",
+      "                >Site Name</a",
+      "            >",
+      "            <button",
+      "                type=\"button\"",
+      "                class=\"nav-toggle\"",
+      "                aria-controls=\"primary-nav\"",
+      "                aria-expanded=\"false\"",
+      "                aria-label=\"Open navigation menu\"",
+      "            >",
+      "                <!-- Replace with your hamburger icon / SVG -->",
+      "                Menu",
+      "            </button>",
+      "            <nav aria-label=\"Primary navigation\">",
+      "                <ul id=\"primary-nav\" role=\"list\">",
+      "                    <li><a href=\"/\" aria-current=\"page\">Home</a></li>",
+      "                    <li><a href=\"/about\">About</a></li>",
+      "                    <li><a href=\"/work\">Work</a></li>",
+      "                    <li><a href=\"/contact\">Contact</a></li>",
+      "                </ul>",
+      "            </nav>",
+      "        </header>",
+      "        <main id=\"main-content\" tabindex=\"-1\" role=\"main\"></main>",
+      "        <footer role=\"contentinfo\">",
+      "            <p>",
+      "                <!-- Copyright year is set dynamically by JS below -->",
+      "                &copy; <span id=\"copyright-year\"></span> Company Name. All",
+      "                rights reserved.",
+      "            </p>",
+      "            <nav aria-label=\"Footer navigation\">",
+      "                <ul role=\"list\">",
+      "                    <li><a href=\"/privacy\">Privacy policy</a></li>",
+      "                    <li><a href=\"/terms\">Terms of service</a></li>",
+      "                    <li><a href=\"/sitemap.xml\">Sitemap</a></li>",
+      "                </ul>",
+      "            </nav>",
+      "        </footer>",
+      "        <script>",
+      "            document.querySelector(\"#copyright-year\").textContent =",
+      "                new Date().getFullYear();",
+      "        </script>",
+      "    </body>",
+      "</html>"
+    ],
+    "description": "HTML5 boilerplate with meta, OG, theme-color, icons, skip link, and semantic layout"
+  },
+  "button": {
+    "prefix": "button",
+    "body": "<button type=\"${1|button,submit,reset|}\" aria-label=\"$2\">$3</button>",
+    "description": "Button with type choices and accessible label"
+  },
+  "form": {
+    "prefix": "form",
+    "body": "<form action=\"$1\" method=\"${2|post,get|}\">\n\t$3\n</form>",
+    "description": "Form with action and method choices"
+  },
+  "image": {
+    "prefix": "img",
+    "body": "<img src=\"$1\" alt=\"$2\" width=\"$3\" height=\"$4\" loading=\"${5|lazy,eager|}\">",
+    "description": "Image with alt text and loading strategy"
+  },
+  "anchor": {
+    "prefix": "a",
+    "body": "<a href=\"$1\"${2: target=\"_blank\" rel=\"noopener noreferrer\"} aria-label=\"$3\">$4</a>",
+    "description": "Link with optional new-tab attributes and accessible label"
+  },
+  "input": {
+    "prefix": "input",
+    "body": "<input type=\"${1|text,email,password,number,checkbox,radio,date,tel,url,search,file,range,color|}\" id=\"$2\" name=\"$3\" autocomplete=\"$4\" aria-label=\"$5\">",
+    "description": "Input with type choices, autocomplete, and accessible label"
+  },
+  "select": {
+    "prefix": "select",
+    "body": "<select id=\"$1\" name=\"$2\" aria-label=\"$3\">\n\t<option value=\"$4\">$5</option>\n</select>",
+    "description": "Select with one option"
+  },
+  "option": {
+    "prefix": "option",
+    "body": "<option value=\"$1\">$2</option>",
+    "description": "Option for select or datalist"
+  },
+  "optgroup": {
+    "prefix": "optgroup",
+    "body": "<optgroup label=\"$1\">\n\t<option value=\"$2\">$3</option>\n</optgroup>",
+    "description": "Grouped options with label"
+  },
+  "textarea": {
+    "prefix": "textarea",
+    "body": "<textarea id=\"$1\" name=\"$2\" rows=\"${3:4}\" aria-label=\"$4\">$5</textarea>",
+    "description": "Textarea with rows"
+  },
+  "fieldset": {
+    "prefix": "fieldset",
+    "body": "<fieldset>\n\t<legend>$1</legend>\n\t$2\n</fieldset>",
+    "description": "Fieldset with legend"
+  },
+  "legend": {
+    "prefix": "legend",
+    "body": "<legend>$1</legend>",
+    "description": "Legend for a fieldset"
+  },
+  "label": {
+    "prefix": "label",
+    "body": "<label for=\"$1\">$2</label>",
+    "description": "Label tied to an input id"
+  },
+  "output": {
+    "prefix": "output",
+    "body": "<output for=\"$1\" id=\"$2\" aria-live=\"polite\">$3</output>",
+    "description": "Output tied to input id(s) with live region"
+  },
+  "meter": {
+    "prefix": "meter",
+    "body": "<meter value=\"${1:0}\" min=\"${2:0}\" max=\"${3:100}\" low=\"${4:25}\" high=\"${5:75}\" optimum=\"${6:100}\" aria-label=\"$7\">${8:0}</meter>",
+    "description": "Meter with min/max, low/high/optimum thresholds, and label"
+  },
+  "progress": {
+    "prefix": "progress",
+    "body": "<progress value=\"${1:0}\" max=\"${2:100}\" aria-label=\"$3\">${4:0}%</progress>",
+    "description": "Progress bar"
+  },
+  "datalist": {
+    "prefix": "datalist",
+    "body": "<datalist id=\"$1\">\n\t<option value=\"$2\">\n</datalist>",
+    "description": "Datalist with one option"
+  },
+  "dialog": {
+    "prefix": "dialog",
+    "body": "<dialog aria-labelledby=\"$1\" aria-modal=\"true\">\n\t<h2 id=\"$1\">$2</h2>\n\t$3\n</dialog>",
+    "description": "Dialog with heading-based label and modal flag"
+  },
+  "details": {
+    "prefix": "details",
+    "body": "<details>\n\t<summary>$1</summary>\n\t$2\n</details>",
+    "description": "Disclosure widget"
+  },
+  "summary": {
+    "prefix": "summary",
+    "body": "<summary>$1</summary>",
+    "description": "Summary for details element"
+  },
+  "nav": {
+    "prefix": "nav",
+    "body": "<nav aria-label=\"$1\">\n\t$2\n</nav>",
+    "description": "Nav landmark with label"
+  },
+  "main": {
+    "prefix": "main",
+    "body": "<main>\n\t$1\n</main>",
+    "description": "Main landmark"
+  },
+  "header": {
+    "prefix": "header",
+    "body": "<header>\n\t$1\n</header>",
+    "description": "Header element"
+  },
+  "footer": {
+    "prefix": "footer",
+    "body": "<footer>\n\t$1\n</footer>",
+    "description": "Footer element"
+  },
+  "aside": {
+    "prefix": "aside",
+    "body": "<aside aria-label=\"$1\">\n\t$2\n</aside>",
+    "description": "Aside landmark with label"
+  },
+  "section": {
+    "prefix": "section",
+    "body": "<section aria-labelledby=\"$1\">\n\t<h2 id=\"$1\">$2</h2>\n\t$3\n</section>",
+    "description": "Section with heading-based label"
+  },
+  "article": {
+    "prefix": "article",
+    "body": "<article>\n\t$1\n</article>",
+    "description": "Article element"
+  },
+  "ul": {
+    "prefix": "ul",
+    "body": "<ul role=\"list\">\n\t<li>$1</li>\n</ul>",
+    "description": "Unordered list — role preserves list semantics when CSS removes bullets"
+  },
+  "ol": {
+    "prefix": "ol",
+    "body": "<ol role=\"list\">\n\t<li>$1</li>\n</ol>",
+    "description": "Ordered list — role preserves list semantics when CSS removes numbers"
+  },
+  "figure": {
+    "prefix": "figure",
+    "body": "<figure>\n\t$1\n\t<figcaption>$2</figcaption>\n</figure>",
+    "description": "Self-contained content with caption"
+  },
+  "figcaption": {
+    "prefix": "figcaption",
+    "body": "<figcaption>$1</figcaption>",
+    "description": "Caption for a figure element"
+  },
+  "blockquote": {
+    "prefix": "blockquote",
+    "body": "<blockquote cite=\"$1\">\n\t<p>$2</p>\n</blockquote>",
+    "description": "Blockquote with cite URL"
+  },
+  "time": {
+    "prefix": "time",
+    "body": "<time datetime=\"$1\">$2</time>",
+    "description": "Time element with machine-readable datetime"
+  },
+  "abbr": {
+    "prefix": "abbr",
+    "body": "<abbr title=\"$1\">$2</abbr>",
+    "description": "Abbreviation with full expansion in title"
+  },
+  "video": {
+    "prefix": "video",
+    "body": "<video src=\"$1\" controls aria-label=\"$2\">\n\t<track kind=\"captions\" src=\"$3\" srclang=\"en\" label=\"English\">\n</video>",
+    "description": "Video with controls and captions track"
+  },
+  "audio": {
+    "prefix": "audio",
+    "body": "<audio src=\"$1\" controls aria-label=\"$2\"></audio>",
+    "description": "Audio with controls"
+  },
+  "picture": {
+    "prefix": "picture",
+    "body": "<picture>\n\t$1\n\t<img src=\"$2\" alt=\"$3\">\n</picture>",
+    "description": "Picture container with fallback img and alt"
+  },
+  "source-media": {
+    "prefix": "source-media",
+    "body": "<source srcset=\"$1\" media=\"$2\" type=\"${3|image/webp,image/avif,image/jpeg,image/png|}\">",
+    "description": "Source for picture — uses srcset and media query"
+  },
+  "source-av": {
+    "prefix": "source-av",
+    "body": "<source src=\"$1\" type=\"${2|video/mp4,video/webm,audio/mpeg,audio/ogg|}\">",
+    "description": "Source for video or audio element"
+  },
+  "track": {
+    "prefix": "track",
+    "body": "<track kind=\"${1|captions,subtitles,descriptions,chapters,metadata|}\" src=\"$2\" srclang=\"${3:en}\" label=\"$4\">",
+    "description": "Track for video or audio captions"
+  },
+  "canvas": {
+    "prefix": "canvas",
+    "body": "<canvas id=\"$1\" width=\"${2:300}\" height=\"${3:150}\" aria-label=\"$4\">\n\t<p>$5</p>\n</canvas>",
+    "description": "Canvas with dimensions, accessible label, and fallback content"
+  },
+  "iframe": {
+    "prefix": "iframe",
+    "body": "<iframe src=\"$1\" title=\"$2\" width=\"$3\" height=\"$4\" loading=\"lazy\"></iframe>",
+    "description": "Iframe with required title and lazy loading"
+  },
+  "script": {
+    "prefix": "script",
+    "body": "<script src=\"$1\" ${2|defer,async|}></script>",
+    "description": "External script with defer or async"
+  },
+  "table": {
+    "prefix": "table",
+    "body": "<table>\n\t<caption>$1</caption>\n\t$2\n</table>",
+    "description": "Table container with caption"
+  },
+  "caption": {
+    "prefix": "caption",
+    "body": "<caption>$1</caption>",
+    "description": "Table caption"
+  },
+  "thead": {
+    "prefix": "thead",
+    "body": "<thead>\n\t$1\n</thead>",
+    "description": "Table head group"
+  },
+  "tbody": {
+    "prefix": "tbody",
+    "body": "<tbody>\n\t$1\n</tbody>",
+    "description": "Table body group"
+  },
+  "tfoot": {
+    "prefix": "tfoot",
+    "body": "<tfoot>\n\t$1\n</tfoot>",
+    "description": "Table foot group"
+  },
+  "tr": {
+    "prefix": "tr",
+    "body": "<tr>\n\t$1\n</tr>",
+    "description": "Table row"
+  },
+  "th": {
+    "prefix": "th",
+    "body": "<th scope=\"${1|col,row|}\">$2</th>",
+    "description": "Table header cell with scope"
+  },
+  "td": {
+    "prefix": "td",
+    "body": "<td>$1</td>",
+    "description": "Table data cell"
+  },
+  "colgroup": {
+    "prefix": "colgroup",
+    "body": "<colgroup>\n\t$1\n</colgroup>",
+    "description": "Column group"
+  },
+  "col": {
+    "prefix": "col",
+    "body": "<col span=\"${1:1}\">",
+    "description": "Column element"
+  }
+}

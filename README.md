@@ -57,6 +57,21 @@ Hovering a class name in `class="..."`, an ID in `id="..."`, or a variable name 
 
 ---
 
+## Snippets
+
+[`snippets/html.json`](snippets/html.json) contains 47 HTML snippets for Zed. Copy it into your personal Zed snippets file:
+
+```
+~/.config/zed/snippets/html.json
+```
+
+**What's included:**
+
+- `html5` — full page boilerplate with meta tags, Open Graph, theme-color, icons, skip-navigation link, and a semantic `<header>` / `<main>` / `<footer>` layout
+- Element snippets for every common HTML element, each pre-wired with the attributes that matter — `type` and `aria-label` on buttons, `alt` and `loading` on images, `autocomplete` on inputs, `scope` on table headers, `datetime` on `<time>`, `cite` on blockquotes, `low`/`high`/`optimum` on meters, `defer`/`async` on scripts, and more
+
+---
+
 ## How it works
 
 The LSP server is a plain Rust binary that speaks the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/) over stdio. It is downloaded automatically by the Zed extension at install time — you do not need to install it manually.
