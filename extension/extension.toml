@@ -1,4 +1,4 @@
-id = "css-class-mapper"
+id = "css-lens"
 name = "CSS Lens"
 description = "Full CSS intelligence for HTML — autocomplete, diagnostics, hover, go-to-definition, find references, and rename for class and ID attributes"
 version = "0.9.0"
