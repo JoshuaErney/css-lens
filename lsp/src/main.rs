@@ -83,6 +83,37 @@ fn keyframes_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?i)@keyframes\s+([a-zA-Z_-][a-zA-Z0-9_-]*)").unwrap())
 }
 
+fn attr_selector_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\[[^\]]*\]").unwrap())
+}
+
+fn element_type_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b[a-zA-Z][a-zA-Z0-9]*\b").unwrap())
+}
+
+fn js_classlist_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"classList\s*\.\s*(?:add|remove|toggle|contains|replace)\s*\(\s*["']([^"']+)["']"#).unwrap()
+    })
+}
+
+fn js_gebc_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"getElementsByClassName\s*\(\s*["']([^"']+)["']"#).unwrap()
+    })
+}
+
+fn js_query_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"querySelectorAll?\s*\(\s*["']([^"']+)["']"#).unwrap()
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Data model
 // ---------------------------------------------------------------------------
@@ -92,6 +123,7 @@ struct ClassInfo {
     properties: String,
     selector: String,
     media_query: Option<String>,
+    layer: Option<String>,
     source_file: String,
     source_path: String,
     definition_line: u32,
@@ -134,6 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         rename_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
         code_lens_provider: Some(CodeLensOptions { resolve_provider: Some(false) }),
         ..Default::default()
     };
@@ -331,6 +364,12 @@ fn route_request(
                 Err(e) => Response::new_err(id, -32602, e.to_string()),
             }
         }
+        "workspace/symbol" => {
+            match serde_json::from_value::<WorkspaceSymbolParams>(params.clone()) {
+                Ok(p) => workspace_symbol_handler(id, p, class_map),
+                Err(e) => Response::new_err(id, -32602, e.to_string()),
+            }
+        }
         _ => Response::new_err(id, -32601, format!("method not found: {method}")),
     }
 }
@@ -358,7 +397,12 @@ fn route_notification(
                 let text = p.text_document.text;
                 documents.insert(uri.clone(), text.clone());
                 if is_html_uri(&uri) {
-                    out.push(publish_diagnostics(uri.clone(), all_html_diagnostics(&text, &uri, class_map)));
+                    let diag_map = uri.to_file_path().ok().and_then(|path| {
+                        let reachable = reachable_css_paths(&path, &text);
+                        build_scoped_class_map(class_map, &reachable)
+                    });
+                    let effective = diag_map.as_ref().unwrap_or(class_map);
+                    out.push(publish_diagnostics(uri.clone(), all_html_diagnostics(&text, &uri, effective)));
                     if let Some(root) = root_path {
                         *usage_counts = build_usage_counts(root, documents);
                     }
@@ -372,7 +416,12 @@ fn route_notification(
                     let text = last.text;
                     documents.insert(uri.clone(), text.clone());
                     if is_html_uri(&uri) {
-                        out.push(publish_diagnostics(uri.clone(), all_html_diagnostics(&text, &uri, class_map)));
+                        let diag_map = uri.to_file_path().ok().and_then(|path| {
+                            let reachable = reachable_css_paths(&path, &text);
+                            build_scoped_class_map(class_map, &reachable)
+                        });
+                        let effective = diag_map.as_ref().unwrap_or(class_map);
+                        out.push(publish_diagnostics(uri.clone(), all_html_diagnostics(&text, &uri, effective)));
                         if let Some(root) = root_path {
                             *usage_counts = build_usage_counts(root, documents);
                         }
@@ -427,7 +476,7 @@ fn route_notification(
                 }
 
                 // Unused-selector hints for CSS files (based on open HTML docs).
-                for (css_uri, diags) in diagnostics_for_unused(class_map, documents) {
+                for (css_uri, diags) in diagnostics_for_unused(class_map, documents, root_path) {
                     out.push(publish_diagnostics(css_uri, diags));
                 }
 
@@ -436,7 +485,12 @@ fn route_notification(
                     .iter()
                     .filter(|(uri, _)| is_html_uri(uri))
                     .map(|(uri, text)| {
-                        publish_diagnostics(uri.clone(), all_html_diagnostics(text, uri, class_map))
+                        let diag_map = uri.to_file_path().ok().and_then(|path| {
+                            let reachable = reachable_css_paths(&path, text);
+                            build_scoped_class_map(class_map, &reachable)
+                        });
+                        let effective = diag_map.as_ref().unwrap_or(class_map);
+                        publish_diagnostics(uri.clone(), all_html_diagnostics(text, uri, effective))
                     })
                     .collect();
                 out.extend(html_diags);
@@ -659,6 +713,25 @@ fn hover_handler(
         None => return Response::new_ok(id, json!(null)),
     };
 
+    // CSS file hover: show declared value when cursor is on a --custom-property.
+    if uri.path().ends_with(".css") {
+        if let Some(w) = word_at_ctx(line, col) {
+            if w.starts_with("--") {
+                if let Some(value) = var_map.get(w.as_str()) {
+                    let hover = Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!("**{}**\n\n```css\n{}: {};\n```", w, w, value),
+                        }),
+                        range: None,
+                    };
+                    return Response::new_ok(id, serde_json::to_value(hover).unwrap_or(json!(null)));
+                }
+            }
+        }
+        return Response::new_ok(id, json!(null));
+    }
+
     // style="..." — hover over CSS variables or animation-name keyframe names
     if in_attr_before(&before, style_attr_re()) {
         let word = word_at_ctx(line, col);
@@ -730,6 +803,11 @@ fn hover_handler(
             .as_deref()
             .map(|mq| format!("\n_inside_ `{mq}`"))
             .unwrap_or_default();
+        let layer_ctx = info
+            .layer
+            .as_deref()
+            .map(|l| format!("\n_in `@layer {l}`_"))
+            .unwrap_or_default();
         let (a, b, c) = specificity(&info.selector);
         let colors = color_summary(&info.properties);
         let color_line = if colors.is_empty() {
@@ -738,11 +816,12 @@ fn hover_handler(
             format!("\n\nColors: {colors}")
         };
         format!(
-            "**{}** — {}:{}{}\n\nSpecificity: `({a},{b},{c})`{color_line}\n\n```css\n{} {{\n{}\n}}\n```",
+            "**{}** — {}:{}{}{}\n\nSpecificity: `({a},{b},{c})`{color_line}\n\n```css\n{} {{\n{}\n}}\n```",
             lookup_key,
             info.source_file,
             info.definition_line + 1,
             mq,
+            layer_ctx,
             info.selector,
             info.properties,
         )
@@ -754,13 +833,19 @@ fn hover_handler(
                 .as_deref()
                 .map(|mq| format!(" _(inside `{mq}`)_"))
                 .unwrap_or_default();
+            let layer_ctx = info
+                .layer
+                .as_deref()
+                .map(|l| format!(" _(@layer {l})_"))
+                .unwrap_or_default();
             let (a, b, c) = specificity(&info.selector);
             parts.push(format!(
-                "**{}.** {}:{}{} — Specificity: `({a},{b},{c})`\n```css\n{} {{\n{}\n}}\n```",
+                "**{}.** {}:{}{}{} — Specificity: `({a},{b},{c})`\n```css\n{} {{\n{}\n}}\n```",
                 i + 1,
                 info.source_file,
                 info.definition_line + 1,
                 mq,
+                layer_ctx,
                 info.selector,
                 info.properties,
             ));
@@ -912,6 +997,39 @@ fn references_handler(
     Response::new_ok(id, serde_json::to_value(locations).unwrap_or(json!([])))
 }
 
+/// When the cursor is on a selector token inside a CSS file, returns the class_map
+/// key for that token (bare name for classes, `#name` for IDs). Returns None when
+/// the cursor is not on a known selector definition at that line.
+fn css_selector_at_cursor(
+    uri: &Url,
+    text: &str,
+    pos: Position,
+    class_map: &ClassMap,
+) -> Option<String> {
+    let path = uri.to_file_path().ok()?;
+    if path.extension().map_or(true, |e| e != "css") {
+        return None;
+    }
+    let source_path = path.to_string_lossy().into_owned();
+    let bare = word_at(text, pos)?;
+    let cursor_line = pos.line;
+
+    if class_map.get(&bare).map_or(false, |infos| {
+        infos.iter().any(|i| i.source_path == source_path && i.definition_line == cursor_line)
+    }) {
+        return Some(bare);
+    }
+
+    let id_key = format!("#{bare}");
+    if class_map.get(&id_key).map_or(false, |infos| {
+        infos.iter().any(|i| i.source_path == source_path && i.definition_line == cursor_line)
+    }) {
+        return Some(id_key);
+    }
+
+    None
+}
+
 fn rename_handler(
     id: RequestId,
     params: RenameParams,
@@ -946,6 +1064,8 @@ fn rename_handler(
             Some(w) => format!("#{w}"),
             None => return Response::new_ok(id, json!(null)),
         }
+    } else if let Some(key) = css_selector_at_cursor(uri, text, pos, class_map) {
+        key
     } else {
         return Response::new_ok(id, json!(null));
     };
@@ -1247,7 +1367,12 @@ fn document_symbol_handler(
                 },
                 tags: None,
                 deprecated: None,
-                container_name: info.media_query.clone(),
+                container_name: match (&info.media_query, &info.layer) {
+                    (Some(mq), Some(l)) => Some(format!("{mq} • @layer {l}")),
+                    (Some(mq), None)    => Some(mq.clone()),
+                    (None,     Some(l)) => Some(format!("@layer {l}")),
+                    (None,     None)    => None,
+                },
             });
         }
     }
@@ -1257,6 +1382,50 @@ fn document_symbol_handler(
         id,
         serde_json::to_value(DocumentSymbolResponse::Flat(symbols)).unwrap_or(json!([])),
     )
+}
+
+fn workspace_symbol_handler(
+    id: RequestId,
+    params: WorkspaceSymbolParams,
+    class_map: &ClassMap,
+) -> Response {
+    let query = params.query.to_lowercase();
+    let mut symbols: Vec<SymbolInformation> = Vec::new();
+
+    for (name, infos) in class_map {
+        let display = if name.starts_with('#') { name.clone() } else { format!(".{name}") };
+        if !query.is_empty() && !display.to_lowercase().contains(&query) {
+            continue;
+        }
+        for info in infos {
+            let uri = match Url::from_file_path(&info.source_path) {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+            #[allow(deprecated)]
+            symbols.push(SymbolInformation {
+                name: display.clone(),
+                kind: SymbolKind::CLASS,
+                location: Location {
+                    uri,
+                    range: Range {
+                        start: Position { line: info.definition_line, character: 0 },
+                        end: Position { line: info.definition_line, character: 0 },
+                    },
+                },
+                tags: None,
+                deprecated: None,
+                container_name: Some(info.source_file.clone()),
+            });
+        }
+    }
+
+    symbols.sort_by(|a, b| {
+        a.name.cmp(&b.name)
+            .then(a.container_name.cmp(&b.container_name))
+            .then(a.location.range.start.line.cmp(&b.location.range.start.line))
+    });
+    Response::new_ok(id, serde_json::to_value(symbols).unwrap_or(json!([])))
 }
 
 fn build_usage_counts(root: &Path, documents: &DocumentMap) -> HashMap<String, usize> {
@@ -1630,13 +1799,14 @@ fn parse_css_file_inner(path: &Path, class_map: &mut ClassMap, visited: &mut Has
 
 fn parse_css_content(content: &str, base_line: u32, source_file: &str, source_path: &str, class_map: &mut ClassMap) {
     let stripped = strip_comments(content);
-    parse_rules_at_level(&stripped, base_line, None, source_file, source_path, class_map);
+    parse_rules_at_level(&stripped, base_line, None, None, source_file, source_path, class_map);
 }
 
 fn parse_rules_at_level(
     content: &str,
     base_line: u32,
     media_query: Option<&str>,
+    layer_name: Option<&str>,
     source_file: &str,
     source_path: &str,
     class_map: &mut ClassMap,
@@ -1670,11 +1840,19 @@ fn parse_rules_at_level(
                         || pending.starts_with("@supports");
                     let child_mq = if is_conditional { Some(pending) } else { media_query };
 
+                    // Track @layer name for selectors nested inside named layers.
+                    let child_layer = if pending.starts_with("@layer") {
+                        let name = pending["@layer".len()..].trim();
+                        if name.is_empty() { layer_name } else { Some(name) }
+                    } else {
+                        layer_name
+                    };
+
                     let block_start = i + 1;
                     i = advance_past_block(bytes, i + 1);
                     let block = &content[block_start..i];
                     let block_base = base_line + byte_offset_to_line(content, block_start);
-                    parse_rules_at_level(block, block_base, child_mq, source_file, source_path, class_map);
+                    parse_rules_at_level(block, block_base, child_mq, child_layer, source_file, source_path, class_map);
                     i += 1;
                 } else if !pending.is_empty() {
                     let trim_offset = raw_chunk.len() - raw_chunk.trim_start().len();
@@ -1685,7 +1863,7 @@ fn parse_rules_at_level(
                     let properties = content[props_start..i].trim();
 
                     if !properties.is_empty() {
-                        process_selector(pending, properties, definition_line, media_query, source_file, source_path, class_map);
+                        process_selector(pending, properties, definition_line, media_query, layer_name, source_file, source_path, class_map);
                     }
                     i += 1;
                 } else {
@@ -1732,31 +1910,38 @@ fn process_selector(
     properties: &str,
     definition_line: u32,
     media_query: Option<&str>,
+    layer_name: Option<&str>,
     source_file: &str,
     source_path: &str,
     class_map: &mut ClassMap,
 ) {
-    let selector = pseudo_re().replace_all(selector_raw, "");
-    let selector_display = selector.trim().to_string();
+    // Use the full raw selector for display (shows :hover, ::before, :is() context, etc.)
+    let selector_display = selector_raw.trim().to_string();
 
-    for m in class_re().find_iter(&selector) {
+    // Extract classes and IDs from the raw selector so that names inside
+    // :is(), :has(), :where(), :not() are captured and added to the map.
+    // class_re/id_re never false-match pseudo content since :hover, :nth-child(2n+1),
+    // etc. contain no '.' or '#' tokens.
+    for m in class_re().find_iter(selector_raw) {
         let name = m.as_str()[1..].to_string();
         class_map.entry(name).or_default().push(ClassInfo {
             properties: properties.to_string(),
             selector: selector_display.clone(),
             media_query: media_query.map(str::to_string),
+            layer: layer_name.map(str::to_string),
             source_file: source_file.to_string(),
             source_path: source_path.to_string(),
             definition_line,
         });
     }
 
-    for m in id_re().find_iter(&selector) {
+    for m in id_re().find_iter(selector_raw) {
         let name = m.as_str().to_string();
         class_map.entry(name).or_default().push(ClassInfo {
             properties: properties.to_string(),
             selector: selector_display.clone(),
             media_query: media_query.map(str::to_string),
+            layer: layer_name.map(str::to_string),
             source_file: source_file.to_string(),
             source_path: source_path.to_string(),
             definition_line,
@@ -1870,6 +2055,50 @@ fn scan_keyframes_file_inner(path: &Path, keyframes_map: &mut KeyframesMap, visi
     let parent = path.parent().unwrap_or(Path::new("."));
     for import_path in extract_imports(&content) {
         scan_keyframes_file_inner(&parent.join(&import_path), keyframes_map, visited);
+    }
+}
+
+fn scan_js_used_classes(root: &Path) -> HashSet<String> {
+    let mut used = HashSet::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let n = e.file_name().to_str().unwrap_or("");
+            n != "node_modules" && !n.starts_with('.')
+        })
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
+    {
+        if let Ok(content) = fs::read_to_string(entry.path()) {
+            collect_js_class_refs(&content, &mut used);
+        }
+    }
+    used
+}
+
+fn collect_js_class_refs(content: &str, used: &mut HashSet<String>) {
+    // classList.add/remove/toggle/contains/replace("foo bar") — extract token(s) directly
+    for cap in js_classlist_re().captures_iter(content) {
+        for token in cap[1].split_whitespace() {
+            used.insert(token.to_string());
+        }
+    }
+    // getElementsByClassName("foo bar") — space-separated class names
+    for cap in js_gebc_re().captures_iter(content) {
+        for token in cap[1].split_whitespace() {
+            used.insert(token.to_string());
+        }
+    }
+    // querySelector/querySelectorAll(".foo #bar") — extract .class and #id tokens
+    for cap in js_query_re().captures_iter(content) {
+        let selector = &cap[1];
+        for m in class_re().find_iter(selector) {
+            used.insert(m.as_str()[1..].to_string()); // strip leading '.'
+        }
+        for m in id_re().find_iter(selector) {
+            used.insert(m.as_str().to_string()); // keep '#' prefix to match class_map key
+        }
     }
 }
 
@@ -2702,6 +2931,7 @@ fn diagnostics_for_css_duplicates(class_map: &ClassMap, source_path: &str) -> Ve
 fn diagnostics_for_unused(
     class_map: &ClassMap,
     documents: &DocumentMap,
+    root_path: Option<&Path>,
 ) -> HashMap<Url, Vec<Diagnostic>> {
     // Collect all selectors used in open HTML documents.
     let mut used: HashSet<String> = HashSet::new();
@@ -2715,6 +2945,13 @@ fn diagnostics_for_unused(
 
     // If no HTML files are open, don't emit any hints — we have no evidence.
     if used.is_empty() { return HashMap::new(); }
+
+    // Suppress hints for classes/IDs referenced in vanilla JS (classList.add,
+    // querySelector, getElementsByClassName, etc.) so DOM manipulation in plain
+    // .js files doesn't produce false unused-selector warnings.
+    if let Some(root) = root_path {
+        used.extend(scan_js_used_classes(root));
+    }
 
     let mut out: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
 
@@ -2951,7 +3188,18 @@ fn specificity(selector: &str) -> (u32, u32, u32) {
     let part = selector.split(',').next().unwrap_or(selector);
     let a = id_re().find_iter(part).count() as u32;
     let b = class_re().find_iter(part).count() as u32;
-    (a, b, 0)
+    // Count element-type selectors (c component) by stripping pseudo-selectors,
+    // attribute selectors, class selectors, and ID selectors, then counting the
+    // remaining word tokens. The universal selector * contributes 0 to specificity.
+    let s = pseudo_re().replace_all(part, " ");
+    let s = attr_selector_re().replace_all(&s, " ");
+    let s = class_re().replace_all(&s, " ");
+    let s = id_re().replace_all(&s, " ");
+    let c = element_type_re()
+        .find_iter(&s)
+        .filter(|m| m.as_str() != "*")
+        .count() as u32;
+    (a, b, c)
 }
 
 /// Returns a formatted string of unique color values found in `properties`.

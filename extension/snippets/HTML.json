@@ -372,5 +372,25 @@
     "prefix": "col",
     "body": "<col span=\"${1:1}\">",
     "description": "Column element"
+  },
+  "link-stylesheet": {
+    "prefix": "link",
+    "body": "<link rel=\"stylesheet\" href=\"$1\">",
+    "description": "Stylesheet link"
+  },
+  "meta": {
+    "prefix": "meta",
+    "body": "<meta name=\"$1\" content=\"$2\">",
+    "description": "Meta tag with name and content"
+  },
+  "template": {
+    "prefix": "template",
+    "body": "<template id=\"$1\">\n\t$2\n</template>",
+    "description": "HTML template element for cloneNode patterns"
+  },
+  "slot": {
+    "prefix": "slot",
+    "body": "<slot name=\"$1\">$2</slot>",
+    "description": "Named slot for web components"
   }
 }

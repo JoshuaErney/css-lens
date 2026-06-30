@@ -8,6 +8,53 @@ Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 
 ---
 
+## [0.10.0] — 2026-06-29
+
+### Added
+- **`@layer` context in hover and outline** — when a selector is nested inside a
+  named `@layer` block, the hover tooltip shows the layer name alongside any
+  `@media`/`@supports` context (e.g. _in `@layer base`_); the CSS document
+  outline panel also shows the layer name in the container column
+- **CSS custom-property hover in CSS files** — hovering `--variable-name`
+  directly inside a `.css` file now shows its declared value; previously this
+  only worked inside HTML `style=""` attributes
+- **Workspace symbol search** — `workspace/symbol` is now implemented; the Zed
+  symbol palette lists every CSS class (`.btn`) and ID (`#hero`) selector across
+  the entire workspace, filterable by query string, with the source filename shown
+  as context
+- **Rename from CSS selector definition** — `F2` now works when the cursor is on
+  a selector name inside a `.css` file; the rename updates the CSS selector and
+  all HTML attribute references atomically; previously rename only triggered from
+  HTML attributes
+- **JS `classList` false-positive suppression** — the unused-selector hint now
+  scans plain JavaScript files for `classList.add/remove/toggle/contains`,
+  `getElementsByClassName`, and `querySelector`/`querySelectorAll` calls; class
+  and ID names found in those calls are excluded from unused-selector hints so
+  vanilla DOM manipulation in `.js` files never produces false positives
+- **New HTML snippets** — `link` (stylesheet `<link>`), `meta` (name/content
+  meta tag), `template` (template element for `cloneNode` patterns), `slot`
+  (named slot for web components); total bundled snippet count is now 51
+
+### Fixed
+- **Scoped "unknown class" diagnostics** — HTML error diagnostics now check only
+  CSS files reachable from that document's `<link rel="stylesheet">` tags and
+  their `@import` chains; a class defined in an unlinked CSS file no longer
+  suppresses the error in a page that never loads it
+- **`:is()` / `:has()` / `:where()` / `:not()` class extraction** — class and
+  ID names inside functional pseudo-class arguments (e.g.
+  `.btn:is(.active, .focused)`) were previously stripped before extraction and
+  never added to the class map, causing false "unknown class" errors and missing
+  completions; they are now correctly indexed
+- **Specificity `c` component always zero** — element-type selectors (`div`,
+  `span`, `h1`, etc.) now contribute to the `c` component of the specificity
+  score shown in hover tooltips; e.g. `div.btn` now correctly displays `(0,1,1)`
+  instead of `(0,1,0)`
+- **Snippet language identifier case** — renamed `snippets/html.json` →
+  `snippets/HTML.json` to match Zed's `"HTML"` language identifier; on
+  case-sensitive filesystems the bundled snippets were silently ignored by Zed
+
+---
+
 ## [0.9.0] — 2026-06-15
 
 ### Added

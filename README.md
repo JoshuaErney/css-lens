@@ -15,42 +15,51 @@ It scans every `.css` file in your workspace and wires up a full set of HTML aut
 - **Smart spacing** — inserted names automatically get a leading or trailing space when the cursor is flush against another class name
 - **ID completions** — typing inside `id="..."` suggests ID selectors; suggestions stop once a value is present (IDs are single-value)
 - **CSS variable completions** — typing `--` inside `style="..."` suggests custom properties (`--primary-color`, etc.) found in your CSS
+- **Property and value completions** — typing inside `style="..."` suggests CSS property names and keyword values (e.g. `display: flex`)
+- **Animation name completions** — when the cursor is in an `animation-name:` value inside `style=""`, suggests every `@keyframes` name defined in your CSS
 
 ### Hover Tooltips
 
 Hovering a class name in `class="..."`, an ID in `id="..."`, or a variable name in `style="..."` shows:
 
-- The **full selector** (e.g. `.btn.btn--primary`)
+- The **full selector** (e.g. `.btn:is(.active, .focused)`)
 - The **source file and line number** (e.g. `styles.css:42`)
 - The **`@media` or `@supports` context** if the rule is inside one
-- The **CSS specificity score** as `(a,b,c)`
+- The **`@layer` context** if the rule is nested inside a named cascade layer (e.g. `@layer base`)
+- The **CSS specificity score** as `(a,b,c)` — IDs, classes, and element types all counted correctly
 - **Color values** — hex, `rgb()`, and `hsl()` values in the rule's properties are shown inline
 - The **full property block** in a syntax-highlighted code fence
 - **All definitions** listed when the same name is defined in multiple files
 - **Declared value** of a CSS custom property when hovering a `--variable-name` in `style=""`
+- **CSS custom property hover in `.css` files** — hovering `--variable-name` directly inside a CSS file shows its declared value, not just in HTML attributes
 
 ### Diagnostics
 
-- **Undefined class/ID** — class and ID names in HTML that don't exist in any CSS file are underlined as errors; the squiggle clears automatically when you save the CSS definition
+- **Undefined class/ID** — class and ID names in HTML are checked against only the CSS files linked from that specific page via `<link rel="stylesheet">` (and their `@import` chains); a class that exists in an unlinked file is still flagged as an error on pages that never load it
 - **Duplicate selector** — if the same class or ID is defined more than once in the same CSS file, every definition after the first is flagged as a warning
-- **Unused-selector hint** — CSS selectors not referenced in any currently-open HTML file receive a soft hint; suppressed when no HTML files are open so JS-driven classes are never falsely flagged
+- **Unused-selector hint** — CSS selectors not referenced in any currently-open HTML file receive a soft hint; suppressed when no HTML files are open; also suppressed for classes referenced in plain JavaScript via `classList.add/remove/toggle`, `getElementsByClassName`, or `querySelector`/`querySelectorAll` so vanilla DOM manipulation never triggers false positives
+- **Duplicate class in attribute** — `class="btn btn"` with the same token listed more than once is flagged as a warning at the duplicate occurrence
 
 ### Navigation
 
-- **Go to definition** — `Cmd+Click` a class in `class="..."` or an ID in `id="..."` to jump to its definition in the source CSS file; when multiple files define the same name the editor presents a picker
+- **Go to definition** — `Cmd+Click` a class in `class="..."` or an ID in `id="..."` to jump to its definition in the source CSS file; when multiple files define the same name the editor presents a picker; also works for `@keyframes` names in `animation-name:`
 - **Find all references** — from a class or ID in an HTML attribute, finds every HTML file in the workspace that uses the same name
+- **Workspace symbol search** — the Zed symbol palette lists every CSS class and ID selector across the entire workspace, searchable by name, with the source filename shown as context
 
 ### Refactoring
 
-- **Rename** — rename a class or ID in one place; the LSP updates the CSS selector definition and every HTML attribute reference across the workspace atomically
-- **Create class/ID** — when an undefined class or ID is flagged in HTML, a Quick Fix code action appends the new rule to the nearest CSS file
+- **Rename** — rename a class or ID from either an HTML attribute or a CSS selector definition; the LSP updates the CSS selector and every HTML attribute reference across the workspace atomically
+- **Create class/ID** — when an undefined class or ID is flagged in HTML, a Quick Fix code action appends the new rule to the nearest linked CSS file
+- **Remove unused rule** — an unused-selector hint offers a Quick Fix to delete the entire rule block from the CSS file; a guard ensures the action is only offered when every co-selector in the block is also unused
 
 ### CSS Parsing
 
 - Follows `@import` chains recursively (with cycle detection)
-- Handles `@media`, `@supports`, `@layer`, and other block at-rules via a proper brace-depth-aware parser
+- Handles `@media`, `@supports`, `@layer`, and other block at-rules via a proper brace-depth-aware parser; tracks `@layer` names so selectors nested inside named layers are attributed correctly
+- Extracts class and ID selectors from inside functional pseudo-classes — `:is(.foo, .bar)`, `:has(.child)`, `:where(.group)`, `:not(.active)` — so those names are fully indexed for completions, hover, and diagnostics
 - Extracts both class selectors (`.btn`) and ID selectors (`#hero`)
 - Parses CSS custom properties (`--name: value`) for variable completions and hover
+- Parses `@keyframes` names for animation-name completions, hover, and go-to-definition
 - Strips block comments while preserving line numbers
 - Skips files larger than 500 KB to avoid stalling on minified bundles
 - Excludes `node_modules` and hidden directories
@@ -59,15 +68,15 @@ Hovering a class name in `class="..."`, an ID in `id="..."`, or a variable name 
 
 ## Snippets
 
-[`snippets/html.json`](snippets/html.json) contains 47 HTML snippets for Zed. Copy it into your personal Zed snippets file:
-
-```
-~/.config/zed/snippets/html.json
-```
+51 HTML snippets are bundled with the extension and load automatically — no manual setup needed.
 
 **What's included:**
 
 - `html5` — full page boilerplate with meta tags, Open Graph, theme-color, icons, skip-navigation link, and a semantic `<header>` / `<main>` / `<footer>` layout
+- `link` — `<link rel="stylesheet">` for quickly adding a stylesheet reference
+- `meta` — meta tag with name and content attributes
+- `template` — `<template>` element for vanilla JS `cloneNode` patterns
+- `slot` — named `<slot>` for web components
 - Element snippets for every common HTML element, each pre-wired with the attributes that matter — `type` and `aria-label` on buttons, `alt` and `loading` on images, `autocomplete` on inputs, `scope` on table headers, `datetime` on `<time>`, `cite` on blockquotes, `low`/`high`/`optimum` on meters, `defer`/`async` on scripts, and more
 
 ---
