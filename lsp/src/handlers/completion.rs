@@ -99,10 +99,10 @@ pub fn completion(id: RequestId, params: CompletionParams, state: &ServerState, 
                         .vars
                         .iter()
                         .filter(|(name, _)| name.to_lowercase().starts_with(&prefix_lower))
-                        .map(|(name, value)| CompletionItem {
+                        .map(|(name, defs)| CompletionItem {
                             label: name.clone(),
                             kind: Some(CompletionItemKind::VARIABLE),
-                            detail: Some(value.clone()),
+                            detail: defs.first().map(|d| d.value.clone()),
                             insert_text: Some(name.clone()),
                             filter_text: Some(name.to_lowercase()),
                             ..Default::default()

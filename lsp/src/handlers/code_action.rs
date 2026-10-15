@@ -16,7 +16,7 @@ use crate::model::{display_key, ClassMap, DocumentMap};
 use crate::server::ServerState;
 
 pub fn code_action(id: RequestId, params: CodeActionParams, state: &ServerState) -> Response {
-    let class_map = &state.class_map;
+    let class_map = &state.css.classes;
     let documents = &state.documents;
     let html_uri = &params.text_document.uri;
     let mut actions: Vec<CodeActionOrCommand> = Vec::new();

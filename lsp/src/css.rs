@@ -2,13 +2,13 @@
 // CSS parsing
 // ---------------------------------------------------------------------------
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use lsp_types::FileChangeType;
 
-use crate::model::{ClassInfo, ClassMap, KeyframeInfo, KeyframesMap, VarMap};
+use crate::model::{ClassInfo, ClassMap, CssIndex, KeyframeInfo, KeyframesMap, VarInfo, VarMap};
 use crate::regexes::{class_re, id_re, import_re, keyframes_re};
 use crate::workspace::workspace_files;
 
@@ -37,14 +37,14 @@ struct Scope<'a> {
     layer: Option<&'a str>,
 }
 
-pub fn scan_directory(root: &Path, class_map: &mut ClassMap) {
+pub fn scan_directory(root: &Path, index: &mut CssIndex) {
     // A single shared visited set across all files prevents parsing the same
     // file twice when it appears directly in the workspace AND is @import-ed by
     // another file — which would otherwise produce false-positive duplicate-selector
     // warnings for every class in the imported file.
     let mut visited: HashSet<PathBuf> = HashSet::new();
     for path in workspace_files(root, &["css"]) {
-        parse_css_file_inner(&path, class_map, &mut visited);
+        parse_css_file_inner(&path, index, &mut visited);
     }
 }
 
@@ -53,29 +53,21 @@ pub fn scan_directory(root: &Path, class_map: &mut ClassMap) {
 /// Every other already-indexed file is pre-seeded into the visited set so the
 /// changed file's `@import`s are not parsed again — otherwise each save would
 /// add a second copy of every selector in the imported files.
-pub fn reload_css_file(path: &Path, typ: FileChangeType, class_map: &mut ClassMap) {
-    let source_path = path.to_string_lossy().into_owned();
-    for infos in class_map.values_mut() {
-        infos.retain(|info| info.source_path != source_path);
-    }
-    class_map.retain(|_, infos| !infos.is_empty());
+pub fn reload_css_file(path: &Path, typ: FileChangeType, index: &mut CssIndex) {
+    index.remove_source(&path.to_string_lossy());
 
     if typ != FileChangeType::CREATED && typ != FileChangeType::CHANGED {
         return;
     }
-    let indexed: HashSet<&str> = class_map
-        .values()
-        .flatten()
-        .map(|info| info.source_path.as_str())
-        .collect();
-    let mut visited: HashSet<PathBuf> = indexed
+    let mut visited: HashSet<PathBuf> = index
+        .source_paths()
         .into_iter()
         .filter_map(|p| Path::new(p).canonicalize().ok())
         .collect();
-    parse_css_file_inner(path, class_map, &mut visited);
+    parse_css_file_inner(path, index, &mut visited);
 }
 
-fn parse_css_file_inner(path: &Path, class_map: &mut ClassMap, visited: &mut HashSet<PathBuf>) {
+fn parse_css_file_inner(path: &Path, index: &mut CssIndex, visited: &mut HashSet<PathBuf>) {
     // Skip files that are too large (e.g. minified bundles).
     if is_too_large(path) {
         return;
@@ -101,17 +93,17 @@ fn parse_css_file_inner(path: &Path, class_map: &mut ClassMap, visited: &mut Has
         Err(_) => return,
     };
 
-    parse_css_content(&content, 0, Source { file: &source_file, path: &source_path }, class_map);
+    parse_css_content(&content, 0, Source { file: &source_file, path: &source_path }, index);
 
     let parent = path.parent().unwrap_or(Path::new("."));
     for import_path in extract_imports(&content) {
-        parse_css_file_inner(&parent.join(&import_path), class_map, visited);
+        parse_css_file_inner(&parent.join(&import_path), index, visited);
     }
 }
 
-pub fn parse_css_content(content: &str, base_line: u32, source: Source, class_map: &mut ClassMap) {
+pub fn parse_css_content(content: &str, base_line: u32, source: Source, index: &mut CssIndex) {
     let stripped = strip_comments(content);
-    parse_rules_at_level(&stripped, base_line, Scope::default(), source, class_map);
+    parse_rules_at_level(&stripped, base_line, Scope::default(), source, index);
 }
 
 fn parse_rules_at_level<'a>(
@@ -119,7 +111,7 @@ fn parse_rules_at_level<'a>(
     base_line: u32,
     scope: Scope<'a>,
     source: Source,
-    class_map: &mut ClassMap,
+    index: &mut CssIndex,
 ) {
     let bytes = content.as_bytes();
     let mut i = 0usize;
@@ -160,7 +152,7 @@ fn parse_rules_at_level<'a>(
                     i = advance_past_block(bytes, i + 1);
                     let block = &content[block_start..i];
                     let block_base = base_line + byte_offset_to_line(content, block_start);
-                    parse_rules_at_level(block, block_base, Scope { media_query, layer }, source, class_map);
+                    parse_rules_at_level(block, block_base, Scope { media_query, layer }, source, index);
                     i += 1;
                 } else if !pending.is_empty() {
                     let trim_offset = raw_chunk.len() - raw_chunk.trim_start().len();
@@ -171,7 +163,11 @@ fn parse_rules_at_level<'a>(
                     let properties = content[props_start..i].trim();
 
                     if !properties.is_empty() {
-                        process_selector(pending, properties, definition_line, scope, source, class_map);
+                        process_selector(pending, properties, definition_line, scope, source, &mut index.classes);
+                        // Custom properties are indexed from every rule, including
+                        // ones with no class or ID selector such as `:root`.
+                        let body_line = base_line + byte_offset_to_line(content, props_start);
+                        collect_custom_properties(pending, &content[props_start..i], body_line, source, &mut index.vars);
                     }
                     i += 1;
                 } else {
@@ -245,6 +241,67 @@ fn process_selector(
     for m in id_re().find_iter(selector_raw) {
         add(m.as_str().to_string());
     }
+}
+
+/// Records every `--name: value` declaration directly inside a rule body.
+/// `body_line` is the line the body starts on.
+fn collect_custom_properties(selector: &str, body: &str, body_line: u32, source: Source, vars: &mut VarMap) {
+    for (offset, decl) in split_declarations(body) {
+        let lead = decl.len() - decl.trim_start().len();
+        let Some(rest) = decl.trim().strip_prefix("--") else { continue };
+        let Some((name, value)) = rest.split_once(':') else { continue };
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+        vars.entry(format!("--{name}")).or_default().push(VarInfo {
+            value: value.to_string(),
+            selector: selector.to_string(),
+            source_file: source.file.to_string(),
+            source_path: source.path.to_string(),
+            definition_line: body_line + byte_offset_to_line(body, offset + lead),
+        });
+    }
+}
+
+/// Splits a rule body into `(offset, declaration)` pieces on `;` outside of
+/// strings and parentheses. Nested rule blocks are skipped.
+fn split_declarations(body: &str) -> Vec<(usize, &str)> {
+    let bytes = body.as_bytes();
+    let mut decls = Vec::new();
+    let (mut start, mut parens, mut braces) = (0usize, 0usize, 0usize);
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    if bytes[i] == b'\\' { i += 1; }
+                    i += 1;
+                }
+            }
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b'{' => braces += 1,
+            b'}' => {
+                braces = braces.saturating_sub(1);
+                if braces == 0 {
+                    start = i + 1;
+                }
+            }
+            b';' if parens == 0 && braces == 0 => {
+                decls.push((start, &body[start..i]));
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if braces == 0 && start < bytes.len() {
+        decls.push((start, &body[start..]));
+    }
+    decls
 }
 
 pub fn extract_imports(content: &str) -> Vec<String> {
@@ -357,33 +414,6 @@ pub fn reload_keyframes_file(path: &Path, typ: FileChangeType, keyframes_map: &m
     if typ == FileChangeType::CREATED || typ == FileChangeType::CHANGED {
         scan_keyframes_file_inner(path, keyframes_map, &mut HashSet::new());
     }
-}
-
-// ---------------------------------------------------------------------------
-// CSS variable map
-// ---------------------------------------------------------------------------
-
-/// Rebuilds the CSS variable map from all property blobs in `class_map`.
-/// Variables are discovered as `--name: value` lines inside any rule.
-pub fn refresh_var_map(class_map: &ClassMap) -> VarMap {
-    let mut vars = HashMap::new();
-    for infos in class_map.values() {
-        for info in infos {
-            for line in info.properties.lines() {
-                let line = line.trim().trim_end_matches(';').trim();
-                if let Some(rest) = line.strip_prefix("--") {
-                    if let Some(colon) = rest.find(':') {
-                        let name = format!("--{}", rest[..colon].trim());
-                        let value = rest[colon + 1..].trim().to_string();
-                        if !value.is_empty() {
-                            vars.entry(name).or_insert(value);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    vars
 }
 
 // ---------------------------------------------------------------------------
@@ -506,10 +536,14 @@ mod tests {
         assert_eq!(find_rule_extent(css, 5), None);
     }
 
+    fn parse_index(css: &str) -> CssIndex {
+        let mut index = CssIndex::default();
+        parse_css_content(css, 0, Source { file: "t.css", path: "/t.css" }, &mut index);
+        index
+    }
+
     fn parse(css: &str) -> ClassMap {
-        let mut map = ClassMap::new();
-        parse_css_content(css, 0, Source { file: "t.css", path: "/t.css" }, &mut map);
-        map
+        parse_index(css).classes
     }
 
     #[test]
@@ -533,5 +567,29 @@ mod tests {
     fn comments_do_not_shift_line_numbers() {
         let map = parse("/* one\n two */\n.btn { color: red; }");
         assert_eq!(map["btn"][0].definition_line, 2);
+    }
+
+    #[test]
+    fn custom_properties_are_indexed_from_any_selector() {
+        let vars = parse_index(":root {\n  --brand: #f00;\n  --space: 4px; --font: \"a;b\", serif;\n}\nbody { --gap: 1rem }").vars;
+        let brand = &vars["--brand"][0];
+        assert_eq!((brand.value.as_str(), brand.selector.as_str(), brand.definition_line), ("#f00", ":root", 1));
+        assert_eq!(vars["--space"][0].definition_line, 2);
+        assert_eq!(vars["--font"][0].value, "\"a;b\", serif");
+        assert_eq!(vars["--gap"][0].selector, "body");
+    }
+
+    #[test]
+    fn custom_properties_keep_every_definition() {
+        let vars = parse_index(":root { --bg: white; }\n[data-theme=dark] { --bg: black; }").vars;
+        let values: Vec<&str> = vars["--bg"].iter().map(|v| v.value.as_str()).collect();
+        assert_eq!(values, ["white", "black"]);
+    }
+
+    #[test]
+    fn nested_rules_are_not_read_as_declarations() {
+        let vars = parse_index(".a { .b { color: red } --x: 1; }").vars;
+        assert_eq!(vars["--x"][0].value, "1");
+        assert_eq!(vars.len(), 1);
     }
 }

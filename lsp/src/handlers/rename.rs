@@ -60,7 +60,7 @@ pub fn rename(id: RequestId, params: RenameParams, state: &ServerState) -> Respo
     };
 
     let lookup_key = match attr_key_at(text, pos)
-        .or_else(|| css_selector_at_cursor(uri, text, pos, &state.class_map))
+        .or_else(|| css_selector_at_cursor(uri, text, pos, &state.css.classes))
     {
         Some(k) => k,
         None => return Response::new_ok(id, json!(null)),
@@ -76,7 +76,7 @@ pub fn rename(id: RequestId, params: RenameParams, state: &ServerState) -> Respo
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
     // CSS edits: replace selector on each definition line.
-    if let Some(infos) = state.class_map.get(&lookup_key) {
+    if let Some(infos) = state.css.classes.get(&lookup_key) {
         for info in infos {
             let css_path = Path::new(&info.source_path);
             let css_uri = match Url::from_file_path(css_path) {

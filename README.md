@@ -30,7 +30,7 @@ Hovering a class name in `class="..."`, an ID in `id="..."`, or a variable name 
 - **Color values** — hex, `rgb()`, and `hsl()` values in the rule's properties are shown inline
 - The **full property block** in a syntax-highlighted code fence
 - **All definitions** listed when the same name is defined in multiple files
-- **Declared value** of a CSS custom property when hovering a `--variable-name` in `style=""`
+- **Declared value** of a CSS custom property when hovering a `--variable-name` in `style=""` — every definition is listed with its rule and location (e.g. `:root` and a `[data-theme="dark"]` override)
 - **CSS custom property hover in `.css` files** — hovering `--variable-name` directly inside a CSS file shows its declared value, not just in HTML attributes
 
 ### Diagnostics
@@ -58,7 +58,7 @@ Hovering a class name in `class="..."`, an ID in `id="..."`, or a variable name 
 - Handles `@media`, `@supports`, `@layer`, and other block at-rules via a proper brace-depth-aware parser; tracks `@layer` names so selectors nested inside named layers are attributed correctly
 - Extracts class and ID selectors from inside functional pseudo-classes — `:is(.foo, .bar)`, `:has(.child)`, `:where(.group)`, `:not(.active)` — so those names are fully indexed for completions, hover, and diagnostics
 - Extracts both class selectors (`.btn`) and ID selectors (`#hero`)
-- Parses CSS custom properties (`--name: value`) for variable completions and hover
+- Parses CSS custom properties (`--name: value`) from every rule — including `:root`, `html`, and attribute selectors — for variable completions and hover
 - Parses `@keyframes` names for animation-name completions, hover, and go-to-definition
 - Strips block comments while preserving line numbers
 - Skips files larger than 500 KB to avoid stalling on minified bundles

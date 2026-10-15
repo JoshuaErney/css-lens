@@ -15,11 +15,11 @@ use lsp_types::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::css::{is_css_path, refresh_var_map, reload_css_file, reload_keyframes_file, scan_directory, scan_keyframes};
+use crate::css::{is_css_path, reload_css_file, reload_keyframes_file, scan_directory, scan_keyframes};
 use crate::diagnostics::{all_html_diagnostics, diagnostics_for_css_duplicates, diagnostics_for_unused, publish_diagnostics};
 use crate::handlers::{code_action, completion, hover, navigation, rename, symbols};
-use crate::html::{build_document_class_map, build_scoped_class_map, is_html_uri, reachable_css_paths};
-use crate::model::{ClassMap, DocumentMap, KeyframesMap, VarMap};
+use crate::html::{build_document_index, build_scoped_index, is_html_uri, reachable_css_paths};
+use crate::model::{CssIndex, DocumentMap, KeyframesMap};
 use crate::workspace::{has_extension, is_workspace_file, WorkspaceIndex, HTML_EXTENSIONS, JS_EXTENSIONS};
 
 #[cfg(test)]
@@ -27,20 +27,17 @@ mod tests;
 
 pub struct ServerState {
     pub root: Option<PathBuf>,
-    pub class_map: ClassMap,
-    pub var_map: VarMap,
+    /// Selectors and custom properties from every workspace stylesheet.
+    pub css: CssIndex,
     pub keyframes_map: KeyframesMap,
     pub documents: DocumentMap,
     pub index: WorkspaceIndex,
 }
 
-/// Class and variable maps visible from the requesting document. For an HTML
-/// file these are scoped to its linked stylesheets plus inline `<style>`
-/// blocks; otherwise they are the global maps.
-pub struct DocMaps<'a> {
-    pub classes: Cow<'a, ClassMap>,
-    pub vars: Cow<'a, VarMap>,
-}
+/// Selectors and custom properties visible from the requesting document. For
+/// an HTML file these are scoped to its linked stylesheets plus inline
+/// `<style>` blocks; otherwise they are the global index.
+pub type DocMaps<'a> = Cow<'a, CssIndex>;
 
 fn with_params<P: DeserializeOwned>(
     id: RequestId,
@@ -55,16 +52,15 @@ fn with_params<P: DeserializeOwned>(
 
 impl ServerState {
     pub fn new(root: Option<PathBuf>) -> Self {
-        let mut class_map = ClassMap::new();
+        let mut css = CssIndex::default();
         let mut keyframes_map = KeyframesMap::new();
         let mut index = WorkspaceIndex::default();
         if let Some(ref root) = root {
-            scan_directory(root, &mut class_map);
+            scan_directory(root, &mut css);
             keyframes_map = scan_keyframes(root);
             index = WorkspaceIndex::build(root);
         }
-        let var_map = refresh_var_map(&class_map);
-        ServerState { root, class_map, var_map, keyframes_map, documents: DocumentMap::new(), index }
+        ServerState { root, css, keyframes_map, documents: DocumentMap::new(), index }
     }
 
     pub fn handle_request(&self, req: Request) -> Response {
@@ -144,18 +140,12 @@ impl ServerState {
         let scoped = if is_html_uri(uri) {
             uri.to_file_path().ok().and_then(|path| {
                 let text = self.documents.get(uri)?;
-                build_document_class_map(&self.class_map, &path, text)
+                build_document_index(&self.css, &path, text)
             })
         } else {
             None
         };
-        match scoped {
-            Some(classes) => {
-                let vars = refresh_var_map(&classes);
-                DocMaps { classes: Cow::Owned(classes), vars: Cow::Owned(vars) }
-            }
-            None => DocMaps { classes: Cow::Borrowed(&self.class_map), vars: Cow::Borrowed(&self.var_map) },
-        }
+        scoped.map_or(Cow::Borrowed(&self.css), Cow::Owned)
     }
 
     /// The path of an HTML document that belongs in the usage index.
@@ -181,9 +171,9 @@ impl ServerState {
     fn html_diagnostics(&self, uri: &Url, text: &str) -> Notification {
         let diag_map = uri.to_file_path().ok().and_then(|path| {
             let reachable = reachable_css_paths(&path, text);
-            build_scoped_class_map(&self.class_map, &reachable)
+            build_scoped_index(&self.css, &reachable)
         });
-        let effective = diag_map.as_ref().unwrap_or(&self.class_map);
+        let effective = diag_map.as_ref().map_or(&self.css.classes, |scoped| &scoped.classes);
         publish_diagnostics(uri.clone(), all_html_diagnostics(text, uri, effective))
     }
 
@@ -213,10 +203,9 @@ impl ServerState {
 
         if !css_changes.is_empty() {
             for (path, typ) in &css_changes {
-                reload_css_file(path, *typ, &mut self.class_map);
+                reload_css_file(path, *typ, &mut self.css);
                 reload_keyframes_file(path, *typ, &mut self.keyframes_map);
             }
-            self.var_map = refresh_var_map(&self.class_map);
 
             // Refresh HTML diagnostics since the class map changed.
             for (uri, text) in &self.documents {
@@ -238,16 +227,16 @@ impl ServerState {
     /// sent together or one would overwrite the other.
     fn css_diagnostics(&self, also: &[PathBuf]) -> Vec<Notification> {
         let mut by_file: HashMap<String, Vec<Diagnostic>> = HashMap::new();
-        for info in self.class_map.values().flatten() {
+        for info in self.css.classes.values().flatten() {
             by_file.entry(info.source_path.clone()).or_default();
         }
         for path in also {
             by_file.entry(path.to_string_lossy().into_owned()).or_default();
         }
-        for (source_path, diags) in diagnostics_for_css_duplicates(&self.class_map) {
+        for (source_path, diags) in diagnostics_for_css_duplicates(&self.css.classes) {
             by_file.entry(source_path).or_default().extend(diags);
         }
-        for (source_path, hints) in diagnostics_for_unused(&self.class_map, &self.documents, self.index.js_refs()) {
+        for (source_path, hints) in diagnostics_for_unused(&self.css.classes, &self.documents, self.index.js_refs()) {
             by_file.entry(source_path).or_default().extend(hints);
         }
 
