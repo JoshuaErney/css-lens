@@ -5,6 +5,7 @@ use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 use serde_json::json;
 
 use crate::cursor::{cursor_context, in_attr_before, style_context, word_at_ctx, StyleContext};
+use crate::model::VarInfo;
 use crate::regexes::{
     attr_selector_re, class_attr_re, class_re, color_re, element_type_re, id_attr_re, id_re, pseudo_re,
     style_attr_re,
@@ -29,8 +30,8 @@ pub fn hover(id: RequestId, params: HoverParams, state: &ServerState, maps: &Doc
     if uri.path().ends_with(".css") {
         if let Some(w) = word_at_ctx(line, col) {
             if w.starts_with("--") {
-                if let Some(value) = state.var_map.get(w.as_str()) {
-                    return markdown(id, format!("**{w}**\n\n```css\n{w}: {value};\n```"));
+                if let Some(defs) = state.css.vars.get(w.as_str()) {
+                    return markdown(id, var_markdown(&w, defs));
                 }
             }
         }
@@ -45,8 +46,8 @@ pub fn hover(id: RequestId, params: HoverParams, state: &ServerState, maps: &Doc
             if w.starts_with("--") {
                 // Fall back to the global var_map when the scoped map doesn't contain
                 // the variable (e.g. --brand defined in an unlinked CSS file).
-                return match maps.vars.get(w.as_str()).or_else(|| state.var_map.get(w.as_str())) {
-                    Some(value) => markdown(id, format!("**{w}**\n\n```css\n{w}: {value};\n```")),
+                return match maps.vars.get(w.as_str()).or_else(|| state.css.vars.get(w.as_str())) {
+                    Some(defs) => markdown(id, var_markdown(w, defs)),
                     None => Response::new_ok(id, json!(null)),
                 };
             }
@@ -142,6 +143,32 @@ pub fn hover(id: RequestId, params: HoverParams, state: &ServerState, maps: &Doc
     };
 
     markdown(id, value)
+}
+
+/// Hover text for a custom property, listing every declaration with the rule
+/// it sits in, so theme overrides like `[data-theme="dark"]` are visible.
+fn var_markdown(name: &str, defs: &[VarInfo]) -> String {
+    if let [def] = defs {
+        return format!(
+            "**{name}** — {}:{} in `{}`\n\n```css\n{name}: {};\n```",
+            def.source_file,
+            def.definition_line + 1,
+            def.selector,
+            def.value,
+        );
+    }
+    let mut parts = vec![format!("**{name}** — {} definitions", defs.len())];
+    for (i, def) in defs.iter().enumerate() {
+        parts.push(format!(
+            "**{}.** {}:{} in `{}`\n```css\n{name}: {};\n```",
+            i + 1,
+            def.source_file,
+            def.definition_line + 1,
+            def.selector,
+            def.value,
+        ));
+    }
+    parts.join("\n\n")
 }
 
 fn markdown(id: RequestId, value: String) -> Response {

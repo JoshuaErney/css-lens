@@ -192,11 +192,11 @@ fn saving_a_css_file_does_not_duplicate_imported_selectors() {
     ws.write("main.css", "@import \"base.css\";\n.main { color: red; }")
         .write("base.css", ".base { color: blue; }");
     let mut state = ws.server();
-    assert_eq!(state.class_map["base"].len(), 1);
+    assert_eq!(state.css.classes["base"].len(), 1);
 
     let out = watched(&mut state, &ws.uri("main.css"), FileChangeType::CHANGED);
-    assert_eq!(state.class_map["base"].len(), 1);
-    assert_eq!(state.class_map["main"].len(), 1);
+    assert_eq!(state.css.classes["base"].len(), 1);
+    assert_eq!(state.css.classes["main"].len(), 1);
     assert_eq!(published(&out, &ws.uri("base.css")), Some(vec![]));
 }
 
@@ -211,7 +211,7 @@ fn deleting_a_css_file_clears_its_selectors_and_diagnostics() {
 
     fs::remove_file(ws.root.join("a.css")).unwrap();
     let out = watched(&mut state, &css, FileChangeType::DELETED);
-    assert!(!state.class_map.contains_key("btn"));
+    assert!(!state.css.classes.contains_key("btn"));
     assert_eq!(published(&out, &css), Some(vec![]));
     assert_eq!(messages(&published(&out, &page).unwrap()), ["Unknown CSS class 'btn'"]);
 }
@@ -494,4 +494,70 @@ fn unknown_methods_return_method_not_found() {
     let state = ServerState::new(None);
     let resp = try_request(&state, "textDocument/formatting", json!({}));
     assert_eq!(resp.error.unwrap().code, ErrorCode::MethodNotFound as i32);
+}
+
+// ── Custom properties ────────────────────────────────────────────────────────
+
+#[test]
+fn root_custom_properties_are_completed_and_hovered() {
+    let ws = TempWorkspace::new();
+    ws.write("vars.css", ":root {\n  --brand: red;\n}\n[data-theme=\"dark\"] { --brand: maroon; }\n.theme { --accent: blue; }");
+    let mut state = ws.server();
+    let page = ws.uri("page.html");
+    open(&mut state, &page, "<div style=\"color: var(--\"></div>\n<p style=\"color: var(--brand)\">");
+
+    let names = labels(&request(&state, "textDocument/completion", at(&page, 0, 25)));
+    assert_eq!(names, ["--accent", "--brand"]);
+
+    let result = request(&state, "textDocument/hover", at(&page, 1, 24));
+    let value = result["contents"]["value"].as_str().unwrap();
+    assert!(value.contains("**--brand** — 2 definitions"), "{value}");
+    assert!(value.contains("vars.css:2 in `:root`"), "{value}");
+    assert!(value.contains("vars.css:4 in `[data-theme=\"dark\"]`"), "{value}");
+    assert!(value.contains("--brand: maroon;"), "{value}");
+}
+
+#[test]
+fn custom_property_hover_in_css_files() {
+    let ws = TempWorkspace::new();
+    ws.write("vars.css", ":root { --gap: 8px; }\n.card { padding: var(--gap); }");
+    let mut state = ws.server();
+    let css = ws.uri("vars.css");
+    open(&mut state, &css, ":root { --gap: 8px; }\n.card { padding: var(--gap); }");
+
+    let result = request(&state, "textDocument/hover", at(&css, 1, 23));
+    let value = result["contents"]["value"].as_str().unwrap();
+    assert!(value.contains("**--gap** — vars.css:1 in `:root`"), "{value}");
+    assert!(value.contains("--gap: 8px;"), "{value}");
+}
+
+#[test]
+fn custom_property_completions_are_scoped_to_linked_stylesheets() {
+    let ws = TempWorkspace::new();
+    ws.write("linked.css", ":root { --linked: 1px; }").write("other.css", ":root { --other: 2px; }");
+    let mut state = ws.server();
+    let page = ws.uri("page.html");
+    open(
+        &mut state,
+        &page,
+        "<link rel=\"stylesheet\" href=\"linked.css\">\n<style>:root { --inline: 3px; }</style>\n<div style=\"width: var(--\">",
+    );
+
+    let names = labels(&request(&state, "textDocument/completion", at(&page, 2, 25)));
+    assert_eq!(names, ["--inline", "--linked"]);
+}
+
+#[test]
+fn saving_a_css_file_refreshes_custom_properties() {
+    let ws = TempWorkspace::new();
+    ws.write("main.css", "@import \"tokens.css\";\n:root { --brand: red; }")
+        .write("tokens.css", ":root { --space: 4px; }");
+    let mut state = ws.server();
+
+    ws.write("main.css", "@import \"tokens.css\";\n:root { --brand: green; }");
+    watched(&mut state, &ws.uri("main.css"), FileChangeType::CHANGED);
+    let brand: Vec<&str> = state.css.vars["--brand"].iter().map(|v| v.value.as_str()).collect();
+    assert_eq!(brand, ["green"]);
+    // The variables-only import must not be parsed a second time.
+    assert_eq!(state.css.vars["--space"].len(), 1);
 }

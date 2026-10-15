@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::css::{parse_css_content, Source};
 use crate::html::{attr_value_extent, extract_style_blocks, html_selector_refs, is_html_uri};
-use crate::model::{display_key, line_start, ClassMap, DocumentMap};
+use crate::model::{display_key, line_start, ClassMap, CssIndex, DocumentMap};
 use crate::regexes::class_attr_re;
 
 pub fn publish_diagnostics(uri: Url, diagnostics: Vec<Diagnostic>) -> lsp_server::Notification {
@@ -32,7 +32,7 @@ pub fn all_html_diagnostics(text: &str, html_uri: &Url, class_map: &ClassMap) ->
 
 fn diagnostics_for_html(text: &str, html_uri: &Url, class_map: &ClassMap) -> Vec<Diagnostic> {
     // Parse inline <style> blocks for any URI scheme (file://, untitled:, etc.).
-    let mut inline = ClassMap::new();
+    let mut inline = CssIndex::default();
     let (source_file, source_path) = match html_uri.to_file_path() {
         Ok(p) => (
             p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
@@ -53,7 +53,7 @@ fn diagnostics_for_html(text: &str, html_uri: &Url, class_map: &ClassMap) -> Vec
         .into_iter()
         .filter_map(|r| {
             let lookup = r.key();
-            if class_map.contains_key(&lookup) || inline.contains_key(&lookup) {
+            if class_map.contains_key(&lookup) || inline.classes.contains_key(&lookup) {
                 return None;
             }
             let kind = if r.is_id { "id" } else { "class" };

@@ -2,7 +2,7 @@
 // HTML attribute scanning and per-document CSS scoping
 // ---------------------------------------------------------------------------
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,7 @@ use lsp_types::Url;
 use regex::Regex;
 
 use crate::css::{extract_imports, is_too_large, parse_css_content, Source};
-use crate::model::{ClassInfo, ClassMap};
+use crate::model::CssIndex;
 use crate::regexes::{class_attr_re, href_val_re, id_attr_re, link_tag_re, rel_stylesheet_re, style_block_re};
 
 pub fn is_html_uri(uri: &Url) -> bool {
@@ -236,30 +236,13 @@ pub fn is_reachable(source_path: &str, reachable: &HashSet<PathBuf>) -> bool {
         .unwrap_or(false)
 }
 
-/// Returns a ClassMap filtered to entries whose source file is in `reachable`.
-/// Returns `None` when `reachable` is empty — callers fall back to the global map.
-pub fn build_scoped_class_map(class_map: &ClassMap, reachable: &HashSet<PathBuf>) -> Option<ClassMap> {
+/// Returns the index filtered to definitions whose source file is in `reachable`.
+/// Returns `None` when `reachable` is empty — callers fall back to the global index.
+pub fn build_scoped_index(index: &CssIndex, reachable: &HashSet<PathBuf>) -> Option<CssIndex> {
     if reachable.is_empty() {
         return None;
     }
-    // Canonicalize each source file once rather than once per selector entry.
-    let mut file_reachable: HashMap<&str, bool> = HashMap::new();
-    let mut scoped = ClassMap::new();
-    for (key, infos) in class_map {
-        let scoped_infos: Vec<ClassInfo> = infos
-            .iter()
-            .filter(|i| {
-                *file_reachable
-                    .entry(i.source_path.as_str())
-                    .or_insert_with(|| is_reachable(&i.source_path, reachable))
-            })
-            .cloned()
-            .collect();
-        if !scoped_infos.is_empty() {
-            scoped.insert(key.clone(), scoped_infos);
-        }
-    }
-    Some(scoped)
+    Some(index.filtered(|source_path| is_reachable(source_path, reachable)))
 }
 
 /// Returns `(base_line, content)` for every `<style>...</style>` block in the
@@ -279,14 +262,14 @@ pub fn extract_style_blocks(html_text: &str) -> Vec<(u32, String)> {
         .collect()
 }
 
-/// Builds the effective ClassMap for a single HTML document by combining:
-///   - CSS reachable via `<link rel="stylesheet">` tags (or the full global map
+/// Builds the effective index for a single HTML document by combining:
+///   - CSS reachable via `<link rel="stylesheet">` tags (or the full global index
 ///     when no resolvable links are found)
-///   - Classes defined in inline `<style>` blocks
+///   - Selectors and custom properties defined in inline `<style>` blocks
 ///
 /// Returns `None` when neither linked CSS nor inline styles are present,
-/// signalling callers to use the unmodified global class_map.
-pub fn build_document_class_map(class_map: &ClassMap, html_path: &Path, html_text: &str) -> Option<ClassMap> {
+/// signalling callers to use the unmodified global index.
+pub fn build_document_index(index: &CssIndex, html_path: &Path, html_text: &str) -> Option<CssIndex> {
     let reachable = reachable_css_paths(html_path, html_text);
     let style_blocks = extract_style_blocks(html_text);
 
@@ -295,11 +278,7 @@ pub fn build_document_class_map(class_map: &ClassMap, html_path: &Path, html_tex
     }
 
     // Start from linked CSS scope, or clone global when there are no <link> tags.
-    let mut doc_map = if reachable.is_empty() {
-        class_map.clone()
-    } else {
-        build_scoped_class_map(class_map, &reachable).unwrap_or_default()
-    };
+    let mut doc_index = build_scoped_index(index, &reachable).unwrap_or_else(|| index.clone());
 
     // Merge inline style blocks (definition_line is relative to the HTML file).
     if !style_blocks.is_empty() {
@@ -311,11 +290,11 @@ pub fn build_document_class_map(class_map: &ClassMap, html_path: &Path, html_tex
         let source_path = html_path.to_string_lossy().into_owned();
         let source = Source { file: &source_file, path: &source_path };
         for (base_line, content) in style_blocks {
-            parse_css_content(&content, base_line, source, &mut doc_map);
+            parse_css_content(&content, base_line, source, &mut doc_index);
         }
     }
 
-    Some(doc_map)
+    Some(doc_index)
 }
 
 #[cfg(test)]

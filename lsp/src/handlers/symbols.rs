@@ -24,7 +24,7 @@ pub fn document_symbol(id: RequestId, params: DocumentSymbolParams, state: &Serv
     };
 
     let mut symbols: Vec<SymbolInformation> = Vec::new();
-    for (name, infos) in &state.class_map {
+    for (name, infos) in &state.css.classes {
         for info in infos {
             if info.source_path != source_path {
                 continue;
@@ -60,7 +60,7 @@ pub fn workspace_symbol(id: RequestId, params: WorkspaceSymbolParams, state: &Se
     let query = params.query.to_lowercase();
     let mut symbols: Vec<SymbolInformation> = Vec::new();
 
-    for (name, infos) in &state.class_map {
+    for (name, infos) in &state.css.classes {
         let display = display_key(name);
         if !query.is_empty() && !display.to_lowercase().contains(&query) {
             continue;
@@ -100,7 +100,7 @@ pub fn code_lens(id: RequestId, params: CodeLensParams, state: &ServerState) -> 
     };
 
     let mut lenses: Vec<CodeLens> = Vec::new();
-    for (name, infos) in &state.class_map {
+    for (name, infos) in &state.css.classes {
         for info in infos {
             if info.source_path != source_path {
                 continue;
