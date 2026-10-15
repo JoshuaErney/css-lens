@@ -85,7 +85,7 @@ Hovering a class name in `class="..."`, an ID in `id="..."`, or a variable name 
 
 The LSP server is a plain Rust binary that speaks the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/) over stdio. It is downloaded automatically by the Zed extension at install time — you do not need to install it manually.
 
-On startup it walks every `.css` file in the workspace, parses all selectors and custom properties into an in-memory map, and responds to LSP requests from the editor. File changes are picked up incrementally via `workspace/didChangeWatchedFiles` — only the changed file is re-parsed. Diagnostics for open HTML files are pushed automatically whenever the CSS map changes.
+On startup it walks every `.css` file in the workspace, parses all selectors and custom properties into an in-memory map, and indexes class/ID usage across workspace HTML files and class references in `.js` files. File changes are picked up incrementally via `workspace/didChangeWatchedFiles` and editor buffer updates — only the changed file is re-parsed, so typing never triggers a full workspace scan. Diagnostics for open HTML files are pushed automatically whenever the CSS map changes.
 
 ---
 
