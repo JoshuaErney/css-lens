@@ -45,8 +45,10 @@ impl zed::Extension for CssLens {
         let target = match (platform, arch) {
             (Os::Mac, Architecture::Aarch64) => "aarch64-apple-darwin",
             (Os::Mac, Architecture::X8664) => "x86_64-apple-darwin",
+            (Os::Linux, Architecture::Aarch64) => "aarch64-unknown-linux-gnu",
             (Os::Linux, Architecture::X8664) => "x86_64-unknown-linux-gnu",
-            (Os::Windows, _) => return Err("Windows is not yet supported".to_string()),
+            (Os::Windows, Architecture::Aarch64) => "aarch64-pc-windows-msvc",
+            (Os::Windows, Architecture::X8664) => "x86_64-pc-windows-msvc",
             _ => {
                 return Err(format!(
                     "Unsupported platform/architecture combination: {platform:?}/{arch:?}"
@@ -70,7 +72,8 @@ impl zed::Extension for CssLens {
             })?;
 
         let binary_dir = format!("css-lens-{version}");
-        let binary_path = format!("{binary_dir}/css-lens");
+        let binary_name = if platform == Os::Windows { "css-lens.exe" } else { "css-lens" };
+        let binary_path = format!("{binary_dir}/{binary_name}");
 
         // If the binary already exists on disk for this version, skip the download.
         // We intentionally do NOT require cached_binary_path to be set — that field
@@ -97,8 +100,11 @@ impl zed::Extension for CssLens {
         zed::download_file(&asset.download_url, &binary_dir, DownloadedFileType::GzipTar)
             .map_err(|e| format!("Failed to download '{asset_name}': {e}"))?;
 
-        zed::make_file_executable(&binary_path)
-            .map_err(|e| format!("Failed to make '{binary_path}' executable: {e}"))?;
+        // Windows has no executable bit; the .exe extension is what makes it runnable.
+        if platform != Os::Windows {
+            zed::make_file_executable(&binary_path)
+                .map_err(|e| format!("Failed to make '{binary_path}' executable: {e}"))?;
+        }
 
         zed::set_language_server_installation_status(
             language_server_id,

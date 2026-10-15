@@ -109,8 +109,13 @@ cargo build --release --target aarch64-apple-darwin
 # macOS Intel
 cargo build --release --target x86_64-apple-darwin
 
-# Linux x86_64 (requires cargo-zigbuild or a GNU cross-toolchain)
+# Linux x86_64 / ARM64 (requires cargo-zigbuild or a GNU cross-toolchain)
 cargo zigbuild --release --target x86_64-unknown-linux-gnu
+cargo zigbuild --release --target aarch64-unknown-linux-gnu
+
+# Windows x86_64 / ARM64 (on Windows with the MSVC toolchain)
+cargo build --release --target x86_64-pc-windows-msvc
+cargo build --release --target aarch64-pc-windows-msvc
 ```
 
 New releases are built and published automatically by the GitHub Actions workflow in `.github/workflows/release.yml` when a `v*` tag is pushed.
@@ -126,8 +131,11 @@ GitHub release assets must be named exactly as follows for the Zed extension to 
 | macOS Apple Silicon | `css-lens-{version}-aarch64-apple-darwin.tar.gz` |
 | macOS Intel | `css-lens-{version}-x86_64-apple-darwin.tar.gz` |
 | Linux x86_64 | `css-lens-{version}-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `css-lens-{version}-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows x86_64 | `css-lens-{version}-x86_64-pc-windows-msvc.tar.gz` |
+| Windows ARM64 | `css-lens-{version}-aarch64-pc-windows-msvc.tar.gz` |
 
-Each `.tar.gz` must contain a single executable named `css-lens`.
+Each `.tar.gz` must contain a single executable named `css-lens` (`css-lens.exe` on Windows).
 
 ---
 
