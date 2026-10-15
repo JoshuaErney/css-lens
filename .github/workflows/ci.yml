@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lsp:
+    name: LSP (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Test
+        run: cargo test --locked
+        working-directory: lsp
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+        working-directory: lsp
+
+  extension:
+    name: Extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+          components: clippy
+
+      - name: Build
+        run: cargo build --locked --target wasm32-wasip2
+        working-directory: extension
+
+      - name: Clippy
+        run: cargo clippy --locked --target wasm32-wasip2 -- -D warnings
+        working-directory: extension
