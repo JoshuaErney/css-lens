@@ -8,6 +8,50 @@ Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 
 ---
 
+## [0.11.0] — 2026-10-23
+
+### Added
+- **Linux ARM64 and Windows builds** — releases now include binaries for
+  `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, and
+  `aarch64-pc-windows-msvc`; the extension downloads the matching asset and
+  runs `css-lens.exe` on Windows
+- **Every definition of a custom property in hover** — hovering a
+  `--variable-name` lists each declaration with its rule and location, so theme
+  overrides such as `[data-theme="dark"]` appear alongside the `:root` value
+- **CI workflow** — tests and clippy run for the LSP on Linux, macOS, and
+  Windows, and the extension is built and linted for `wasm32-wasip2`, on every
+  push to `main` and every pull request
+
+### Changed
+- **Incremental usage index** — HTML class/ID usage counts and JS class
+  references are indexed once at startup and then updated one file at a time
+  from buffer edits and file-watcher events (now registered for `.html`, `.htm`,
+  and `.js` as well as `.css`); typing no longer rescans every HTML file and
+  unused-selector hints no longer re-read every `.js` file
+- **LSP split into modules** — the single `main.rs` is now organised into
+  `css`, `html`, `js`, `cursor`, `diagnostics`, `workspace`, `server`, and
+  per-request `handlers` modules
+
+### Fixed
+- **Custom properties outside class/ID rules** — variables declared in `:root`,
+  `html`, `body`, or attribute selectors were never indexed, so they were
+  missing from completions and hover; every `--name: value` declaration is now
+  recorded
+- **Several declarations on one line** — `--a: 1; --b: 2` was read as a single
+  declaration giving `--a` the value `1; --b: 2`; declarations are now split on
+  unquoted semicolons
+- **Duplicated imported selectors after save** — saving a CSS file re-parsed
+  its `@import`s and added every imported selector again, causing false
+  duplicate-selector warnings and repeated hover entries
+- **Lost duplicate-selector warnings** — unused-selector hints overwrote
+  duplicate-selector warnings for the same CSS file, and stale hints were never
+  cleared; both are now published together
+- **Hang on exit** — the server no longer hangs when Zed shuts it down
+- **Dot-prefixed workspace root ignored** — a workspace whose root folder name
+  starts with `.` was skipped entirely
+
+---
+
 ## [0.10.0] — 2026-06-29
 
 ### Added
